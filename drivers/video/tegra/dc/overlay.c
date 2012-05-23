@@ -507,6 +507,7 @@ surf_err:
 static void tegra_overlay_set_emc_freq(struct tegra_overlay_info *dev)
 {
 	unsigned long new_rate;
+	unsigned long new_rate_khz;
 	int i;
 	struct tegra_dc_win *win;
 	struct tegra_dc_win *wins[DC_N_WINDOWS];
@@ -516,8 +517,9 @@ static void tegra_overlay_set_emc_freq(struct tegra_overlay_info *dev)
 		wins[i] = win;
 	}
 
-	new_rate = tegra_dc_get_bandwidth(wins, dev->dc->n_windows);
-	new_rate = EMC_BW_TO_FREQ(new_rate);
+	new_rate_khz = tegra_dc_get_bandwidth(wins, dev->dc->n_windows);
+	new_rate_khz = EMC_BW_TO_FREQ(new_rate_khz);
+	new_rate = new_rate_khz * 1000;
 
 	if (tegra_dc_has_multiple_dc())
 		new_rate = ULONG_MAX;

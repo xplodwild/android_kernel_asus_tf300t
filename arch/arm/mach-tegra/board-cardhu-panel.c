@@ -1278,15 +1278,16 @@ int __init cardhu_panel_init(void)
 		tegra_gpio_enable(cardhu_lvds_shutdown);
 	}
 */
-	if (tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG){
+/*	if (tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG ||  tegra3_get_project_id() == TEGRA3_PROJECT_TF300T ){
 		cardhu_disp1_out.modes->pclk = 83900000;
 		cardhu_disp1_out.modes->v_front_porch = 200;
 		cardhu_disp1_out.parent_clk = "pll_d_out0";
 
 		cardhu_disp2_out.parent_clk = "pll_d2_out0";
 
-		printk("########## TF300TG: Set LCD pclk as %d Hz, parent_clk=%s\n", cardhu_disp1_out.modes->pclk, cardhu_disp1_out.parent_clk);
+		printk("########## TF300T/TG: Set LCD pclk as %d Hz, parent_clk=%s\n", cardhu_disp1_out.modes->pclk, cardhu_disp1_out.parent_clk);
 	}
+*/
 
 	if (tegra3_get_project_id()==0x4 ){
 		printk("Check TF202T setting \n ");

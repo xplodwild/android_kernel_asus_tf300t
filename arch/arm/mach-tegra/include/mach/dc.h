@@ -423,8 +423,8 @@ struct tegra_dc_win {
 	struct tegra_dc		*dc;
 
 	struct nvmap_handle_ref	*cur_handle;
-	unsigned		bandwidth;
-	unsigned		new_bandwidth;
+	unsigned		bandwidth_khz;
+	unsigned		new_bandwidth_khz;
 	struct tegra_dc_lut	lut;
 };
 

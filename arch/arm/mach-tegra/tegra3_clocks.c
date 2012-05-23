@@ -1542,8 +1542,8 @@ static int tegra3_pll_clk_set_rate(struct clk *c, unsigned long rate)
 		cfg.cpcon = OUT_OF_TABLE_CPCON;
 
 		// for TF300TG pclk tuning
-		if(!strcmp(c->name, "pll_d") && ( tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG ) ) {
-			/* config divN, divM for nearest rate */
+		/*if(!strcmp(c->name, "pll_d") && ( tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG || tegra3_get_project_id() == TEGRA3_PROJECT_TF300T ) ) {
+			// config divN, divM for nearest rate
 			unsigned long input = input_rate;
 			long output = rate;
 			int div = 1;
@@ -1573,7 +1573,7 @@ static int tegra3_pll_clk_set_rate(struct clk *c, unsigned long rate)
 			cfg.p = 1;
 			p_div = 0;
 		}
-
+		*/
 		if ((cfg.m > (PLL_BASE_DIVM_MASK >> PLL_BASE_DIVM_SHIFT)) ||
 		    (cfg.n > (PLL_BASE_DIVN_MASK >> PLL_BASE_DIVN_SHIFT)) ||
 		    (p_div > (PLL_BASE_DIVP_MASK >> PLL_BASE_DIVP_SHIFT)) ||
@@ -1980,13 +1980,13 @@ static void tegra3_periph_clk_init(struct clk *c)
 	}
 
 	// set disp1 parent clock to pll_d_out0
-	if(!strcmp(c->name, "disp1") && ( tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG )) {
+	/*if(!strcmp(c->name, "disp1") && ( tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG || tegra3_get_project_id() == TEGRA3_PROJECT_TF300T )) {
 		val &= ~periph_clk_source_mask(c);
 		val |= (c->inputs[2].value << periph_clk_source_shift(c));
 		clk_writel_delay(val, c->reg);
 		c->parent = c->inputs[2].input;
 	}
-
+	*/
 	if (c->flags & DIV_U71) {
 		u32 divu71 = val & PERIPH_CLK_SOURCE_DIVU71_MASK;
 		if ((c->flags & DIV_U71_UART) &&
@@ -2851,7 +2851,8 @@ static int tegra3_clk_shared_bus_update(struct clk *bus)
 		if (c->u.shared_bus_user.enabled) {
 			switch (c->u.shared_bus_user.mode) {
 			case SHARED_BW:
-				bw += c->u.shared_bus_user.rate;
+				if (bw < bus->max_rate)
+					bw += c->u.shared_bus_user.rate;
 				break;
 			case SHARED_CEILING:
 				ceiling = min(c->u.shared_bus_user.rate,
@@ -2863,6 +2864,16 @@ static int tegra3_clk_shared_bus_update(struct clk *bus)
 				rate = max(c->u.shared_bus_user.rate, rate);
 			}
 		}
+	}
+
+	if (bw) {
+		if (bus->flags & PERIPH_EMC_ENB) {
+			bw = tegra_emc_bw_efficiency ?
+				(bw / tegra_emc_bw_efficiency) : bus->max_rate;
+			bw = (bw < bus->max_rate / 100) ?
+				(bw * 100) : bus->max_rate;
+		}
+		bw = clk_round_rate_locked(bus, bw);
 	}
 	rate = min(max(rate, bw), ceiling);
 
@@ -2911,6 +2922,10 @@ static long tegra_clk_shared_bus_round_rate(struct clk *c, unsigned long rate)
 	/* auto user follow others, by itself it run at minimum bus rate */
 	if (c->u.shared_bus_user.mode == SHARED_AUTO)
 		rate = 0;
+
+	/* BW users should not be rounded until aggregated */
+	if (c->u.shared_bus_user.mode == SHARED_BW)
+		return rate;
 
 	return clk_round_rate(c->parent, rate);
 }
@@ -4168,6 +4183,7 @@ struct clk tegra_list_clks[] = {
 	SHARED_CLK("3d.emc",	"tegra_gr3d",		"emc",	&tegra_clk_emc, NULL, 0, 0),
 	SHARED_CLK("2d.emc",	"tegra_gr2d",		"emc",	&tegra_clk_emc, NULL, 0, 0),
 	SHARED_CLK("mpe.emc",	"tegra_mpe",		"emc",	&tegra_clk_emc, NULL, 0, 0),
+	SHARED_CLK("camera.emc", "tegra_camera",	"emc",	&tegra_clk_emc, NULL, 0, SHARED_BW),
 	SHARED_CLK("floor.emc",	"floor.emc",		NULL,	&tegra_clk_emc, NULL, 0, 0),
 
 	SHARED_CLK("host1x.cbus", "tegra_host1x",	"host1x", &tegra_clk_cbus, "host1x", 2, SHARED_AUTO),

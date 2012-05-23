@@ -968,16 +968,16 @@ static void tegra_dc_set_latency_allowance(struct tegra_dc *dc,
 	BUG_ON(dc->ndev->id >= ARRAY_SIZE(vfilter_tab));
 	BUG_ON(w->idx >= ARRAY_SIZE(*la_id_tab));
 
-	bw = w->new_bandwidth;
+	bw = w->new_bandwidth_khz;
 
 	/* tegra_dc_get_bandwidth() treats V filter windows as double
 	 * bandwidth, but LA has a seperate client for V filter */
 	if (w->idx == 1 && win_use_v_filter(w))
 		bw /= 2;
 
-	/* our bandwidth is in bytes/sec, but LA takes MBps.
+	/* our bandwidth is in Kbytes/sec, but LA takes MBps.
 	 * round up bandwidth to 1MBps */
-	bw = bw / 1000000 + 1;
+	bw = bw / 1000 + 1;
 
 #ifdef CONFIG_TEGRA_SILICON_PLATFORM
 	tegra_set_latency_allowance(la_id_tab[dc->ndev->id][w->idx], bw);
@@ -986,7 +986,7 @@ static void tegra_dc_set_latency_allowance(struct tegra_dc *dc,
 		tegra_set_latency_allowance(vfilter_tab[dc->ndev->id], bw);
 #endif
 
-	w->bandwidth = w->new_bandwidth;
+	w->bandwidth_khz = w->new_bandwidth_khz;
 }
 
 static unsigned int tegra_dc_windows_is_overlapped(struct tegra_dc_win *a,
@@ -1030,7 +1030,7 @@ static unsigned long tegra_dc_find_max_bandwidth(struct tegra_dc_win *wins[],
 
 		if (wins[i] == NULL)
 			continue;
-		bw1 = wins[i]->new_bandwidth;
+		bw1 = wins[i]->new_bandwidth_khz;
 		if (bw1 > max_bw)
 			/* Single window */
 			max_bw = bw1;
@@ -1039,7 +1039,7 @@ static unsigned long tegra_dc_find_max_bandwidth(struct tegra_dc_win *wins[],
 			if (wins[j] == NULL)
 				continue;
 			if (tegra_dc_windows_is_overlapped(wins[i], wins[j])) {
-				unsigned int bw2 = wins[j]->new_bandwidth;
+				unsigned int bw2 = wins[j]->new_bandwidth_khz;
 				if (bw1 + bw2 > max_bw)
 					/* Window pair overlaps */
 					max_bw = bw1 + bw2;
@@ -1050,8 +1050,8 @@ static unsigned long tegra_dc_find_max_bandwidth(struct tegra_dc_win *wins[],
 
 	if (overlap_count == 3)
 		/* All three windows overlap */
-		max_bw = wins[0]->new_bandwidth + wins[1]->new_bandwidth +
-			 wins[2]->new_bandwidth;
+		max_bw = wins[0]->new_bandwidth_khz + wins[1]->new_bandwidth_khz +
+			 wins[2]->new_bandwidth_khz;
 
 	return max_bw;
 }
@@ -1095,11 +1095,7 @@ static unsigned long tegra_dc_calc_win_bandwidth(struct tegra_dc *dc,
 		(win_use_v_filter(w) ? 2 : 1) * dfixed_trunc(w->w) / w->out_w *
 		(WIN_IS_TILED(w) ? tiled_windows_bw_multiplier : 1);
 
-/*
- * Assuming 48% efficiency: i.e. if we calculate we need 70MBps, we
- * will request 147MBps from EMC.
- */
-	ret = ret * 2 + ret / 10;
+	ret = ret / 1000 + 1; /* in KHz */
 
 	/* if overflowed */
 	if (ret > (1UL << 31))
@@ -1119,7 +1115,7 @@ unsigned long tegra_dc_get_bandwidth(struct tegra_dc_win *windows[], int n)
 	for (i = 0; i < n; i++) {
 		struct tegra_dc_win *w = windows[i];
 		if (w)
-			w->new_bandwidth = tegra_dc_calc_win_bandwidth(w->dc, w);
+			w->new_bandwidth_khz = tegra_dc_calc_win_bandwidth(w->dc, w);
 	}
 
 	return tegra_dc_find_max_bandwidth(windows, n);
@@ -1146,7 +1142,7 @@ static void tegra_dc_program_bandwidth(struct tegra_dc *dc)
 
 	for (i = 0; i < DC_N_WINDOWS; i++) {
 		struct tegra_dc_win *w = &dc->windows[i];
-		if (w->bandwidth != w->new_bandwidth && w->new_bandwidth != 0)
+		if (w->bandwidth_khz != w->new_bandwidth_khz && w->new_bandwidth_khz != 0)
 			tegra_dc_set_latency_allowance(dc, w);
 	}
 }
@@ -1154,6 +1150,7 @@ static void tegra_dc_program_bandwidth(struct tegra_dc *dc)
 static int tegra_dc_set_dynamic_emc(struct tegra_dc_win *windows[], int n)
 {
 	unsigned long new_rate;
+	unsigned long new_rate_khz;
 	struct tegra_dc *dc;
 
 	if (!use_dynamic_emc)
@@ -1162,11 +1159,9 @@ static int tegra_dc_set_dynamic_emc(struct tegra_dc_win *windows[], int n)
 	dc = windows[0]->dc;
 
 	/* calculate the new rate based on this POST */
-	new_rate = tegra_dc_get_bandwidth(windows, n);
-	new_rate = EMC_BW_TO_FREQ(new_rate);
-
-	/* add additional 50% memory clk to prevent underflow */
-	new_rate += new_rate >> 1;
+	new_rate_khz = tegra_dc_get_bandwidth(windows, n);
+	new_rate_khz = EMC_BW_TO_FREQ(new_rate_khz);
+	new_rate = new_rate_khz * 1000;
 
 	if (tegra_dc_has_multiple_dc())
 		new_rate = ULONG_MAX;
@@ -2182,6 +2177,13 @@ static void tegra_dc_underflow_handler(struct tegra_dc *dc)
 			if (dc->windows[i].underflows > 4)
 				schedule_work(&dc->reset_work);
 #endif
+#ifdef CONFIG_ARCH_TEGRA_3x_SOC
+			if (dc->windows[i].underflows > 4) {
+				val = tegra_dc_readl(dc, DC_DISP_DISP_MISC_CONTROL);
+				val |= UF_LINE_FLUSH;
+				tegra_dc_writel(dc, val, DC_DISP_DISP_MISC_CONTROL);
+			}
+#endif
 		} else {
 			dc->windows[i].underflows = 0;
 		}
@@ -2313,6 +2315,8 @@ static irqreturn_t tegra_dc_irq(int irq, void *ptr)
 		schedule_delayed_work(&dc->underflow_work,
 			msecs_to_jiffies(1));
 	}
+	else
+		tegra_dc_writel(dc, 0, DC_DISP_DISP_MISC_CONTROL);
 
 	if (dc->out->flags & TEGRA_DC_OUT_ONE_SHOT_MODE)
 		tegra_dc_one_shot_irq(dc, status);
@@ -2467,7 +2471,9 @@ static void tegra_dc_init(struct tegra_dc *dc)
 	tegra_dc_writel(dc, 0x0001c700, DC_CMD_INT_POLARITY);
 	tegra_dc_writel(dc, 0x00202020, DC_DISP_MEM_HIGH_PRIORITY);
 	tegra_dc_writel(dc, 0x00010101, DC_DISP_MEM_HIGH_PRIORITY_TIMER);
-
+#ifdef CONFIG_ARCH_TEGRA_3x_SOC
+	tegra_dc_writel(dc, 0x00000000, DC_DISP_DISP_MISC_CONTROL);
+#endif
 	/* enable interrupts for vblank, frame_end and underflows */
 	tegra_dc_writel(dc, (FRAME_END_INT | V_BLANK_INT | ALL_UF_INT),
 		DC_CMD_INT_ENABLE);
@@ -2649,8 +2655,8 @@ static void _tegra_dc_controller_disable(struct tegra_dc *dc)
 		struct tegra_dc_win *w = &dc->windows[i];
 
 		/* reset window bandwidth */
-		w->bandwidth = 0;
-		w->new_bandwidth = 0;
+		w->bandwidth_khz = 0;
+		w->new_bandwidth_khz = 0;
 
 		/* disable windows */
 		w->flags &= ~TEGRA_WIN_FLAG_ENABLED;

@@ -23,6 +23,8 @@
 #include <linux/init.h>
 #include <linux/nmi.h>
 #include <linux/dmi.h>
+#include <asm/io.h>
+
 
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
