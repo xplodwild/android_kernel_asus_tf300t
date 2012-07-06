@@ -2327,8 +2327,12 @@ struct tegra_usb_phy *tegra_usb_phy_open(int instance, void __iomem *regs,
 				}else{
 					phy->xcvr_setup_value = 0;
 				}
-			}else
+			} else {
 				phy->xcvr_setup_value = phy->xcvr_setup_value + 8;
+				if(phy->xcvr_setup_value > 63)
+					phy->xcvr_setup_value = 63;
+			}
+
 			pr_info("phy->instance= %d , phy->xcvr_setup_value=%d\n",phy->instance,phy->xcvr_setup_value);
 		}
 		if (err < 0)
