@@ -222,7 +222,7 @@ CONFIG_NETDEVICES=y
 CONFIG_TUN=y
 CONFIG_DUMMY=y
 # CONFIG_NETDEV_10000 is not set
-# CONFIG_BCM4329 is not set
+# CONFIG_BCM4329=m is not set
 # CONFIG_BCM4329_FIRST_SCAN is not set
 CONFIG_BCM4329_FW_PATH="/system/vendor/firmware/fw_bcm4329.bin"
 CONFIG_BCM4329_NVRAM_PATH="/system/etc/nvram.txt"
