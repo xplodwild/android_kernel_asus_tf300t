@@ -52,6 +52,10 @@
 #define SPI_CMD_WRT_DIS 	0x04
 #define SPI_CMD_ERASE_ALL	0xC7
 
+#define	SPI_CMD_SECTOR_ERASE		0x20
+#define	SPI_CMD_32KB_BLOCK_ERASE	0x52
+#define	SPI_CMD_64KB_BLOCK_ERASE	0xD8
+
 #define SENSOR_ID_MI1040	0x2481
 #define SENSOR_ID_OV2720	0x2720
 #define SENSOR_ID_IMX175	0x175
@@ -794,7 +798,7 @@ u32 I2C_SPIFlashReadId(void)
 
 	return ID;
 }
-
+#if 0 //for 8Mb spi flash test
 static const u32 stSpiIdInfo[29] =
 {
 	/*EON*/
@@ -846,7 +850,35 @@ static const u32 sstSpiIdInfo[6] =
 	/*Fail*/
 	0x00000000,
 };
+#endif
 
+static const u32 stSpiIdInfo[7][3] =
+{
+	/*Winbond*/
+	{0x00EF3017,4096, 2048},
+	{0x00EF3016,4096, 1024},
+	{0x00EF3015,4096, 512},
+	{0x00EF3014,4096, 256},
+	{0x00EF5014,4096, 256},
+	{0x00EF3013,4096, 128},
+	{0x00EF5013,4096, 128},
+	/*Fail*/
+	{0x00000000,0,0},
+};
+
+static const u32 sstSpiIdInfo[6][3] =
+{
+	/*ESMT*/
+	{0x008C4016,4096,512},
+	/*SST*/
+	{0x00BF254A,4096,1024},
+	{0x00BF2541,4096,512},
+	{0x00BF258E,4096,256},
+	{0x00BF258D,4096,128},
+	/*Fail*/
+	{0x00000000,0,0},
+};
+#if 0  //for 8Mb spi flash test
 u32
 BB_SerialFlashTypeCheck(
 	u32 id
@@ -896,6 +928,78 @@ BB_SerialFlashTypeCheck(
 			return 0;
 		}
 		if( stSpiIdInfo[i] == 0x00000000 ) {
+			if( fullID ){
+				fullID = 0;/* sarch partial ID */
+				i = 0;
+				shift = 16;
+				id = id >> shift;
+				continue;
+			}
+			type = 3;
+			break;
+		}
+		i ++;
+	}
+
+	return type;
+}
+#endif
+
+u32
+BB_SerialFlashTypeCheck(
+	u32 id,
+	u32 *spiSize
+)
+{
+	u32 i=0;
+	u32 fullID = 1;
+	u32 shift = 0, tblId, type = 0;
+	/*printf("id:0x%x spiSize:0x%x\n",id,spiSize);*/
+	/* check whether SST type serial flash */
+	while( 1 ){
+		tblId = sstSpiIdInfo[i][0] >> shift;
+		if( id == tblId ) {
+			printk("SST type serial flash:%x %x %x\n",i,id,sstSpiIdInfo[i][0]);
+			type = 2;
+			*spiSize = sstSpiIdInfo[i][1]*sstSpiIdInfo[i][2];
+			break;
+		}
+		if( id == 0x00FFFFFF || id == 0x00000000) {
+			return 0;
+		}
+		if( sstSpiIdInfo[i][0] == 0x00000000 ) {
+			#if 0
+			if( fullID ){
+				fullID = 0;/* sarch partial ID */
+				i = 0;
+				shift = 16;
+				id = id >> shift;
+				continue;
+			}
+			#endif
+			type = 3;
+			break;
+		}
+		i ++;
+	}
+	if( type == 2 )
+		return type;
+
+	i = 0;
+	/* check whether ST type serial flash */
+	while( 1 ){
+		tblId = stSpiIdInfo[i][0] >> shift;
+		if( id == tblId ) {
+			printk("ST Type serial flash:%x %x %x\n",i,id,stSpiIdInfo[i][0]);
+			type = 1;
+			*spiSize = stSpiIdInfo[i][1]*stSpiIdInfo[i][2];
+			/*printf("spiSize:0x%x\n",*spiSize);*/
+			break;
+		}
+		if( id == 0x00FFFFFF || id == 0x00000000) {
+			return 0;
+		}
+		if( stSpiIdInfo[i][0] == 0x00000000 ) {
 			if( fullID ){
 				fullID = 0;/* sarch partial ID */
 				i = 0;
@@ -1093,7 +1197,10 @@ u32 I2C_SPIFlashWrite(
 {
 	u32 i, err = 0;
 	u32 pageSize = 0x100;
+	u32 rsvSec1, rsvSec2;
 
+	rsvSec1 = pages*pageSize - 0x5000;
+	rsvSec2 = pages*pageSize - 0x1000;
 	addr = addr * pageSize;
 
 	printk("iCatch: ST type writing...\n");
@@ -1102,7 +1209,14 @@ u32 I2C_SPIFlashWrite(
 	while( pages ) {
 		page_count = (int)pages;
 		writeUpdateProgresstoFile(page_count, total_page_count);
-
+		/* reserve the last 2 ~ 5 sectors for calibration data */
+		if((addr>=rsvSec1) && (addr <rsvSec2))
+		{
+			addr += 0x1000;
+			pbuf += 0x1000;
+			pages -= 0x10;
+			continue;
+		}
 		I2C_SPIFlashWrEnable();
 		//hsI2CDataWrite(0x40e7,0x00);
 		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
@@ -1170,6 +1284,199 @@ void I2C_SPISstStatusWrite(u8 dat)
     return;
 }
 
+u32 I2C_SPI64KBBlockErase(
+	u32 address,
+	u32 stFlag
+)
+{
+	u32 timeout;
+	printk("addr:0x%x\n",address);
+	if(!stFlag)
+	{
+		I2C_SPIFlashWrEnable();
+
+		//hsI2CDataWrite(0x40e7,0x00);
+		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+		//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);				/*Write Status register command*/
+		sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS_EN);
+		//hsI2CDataWrite(0x40e7,0x01);
+		sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	}
+
+	//hsI2CDataWrite(0x40e7,0x00);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+	//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);				/*Write Status register command*/
+	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS);
+	//I2C_SPIFlashPortWrite(0x02);
+	sensor_write_reg(info->i2c_client, 0x40e3,0x02);
+	//hsI2CDataWrite(0x40e7,0x01);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+
+	I2C_SPIFlashWrEnable();
+
+	//hsI2CDataWrite(0x40e7,0x00);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+	//I2C_SPIFlashPortWrite(SPI_CMD_64KB_BLOCK_ERASE);
+	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_64KB_BLOCK_ERASE);
+	//I2C_SPIFlashPortWrite(address >> 16);	/* A23~A16 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address >> 16));
+	//I2C_SPIFlashPortWrite(address >> 8);		/* A15~A08 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address >> 8));
+	//I2C_SPIFlashPortWrite(address);			/* A07~A00 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address));
+	//hsI2CDataWrite(0x40e7,0x01);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+
+	timeout = 5000000;
+	I2C_SPITimeOutWait(0x01, &timeout);
+
+	return 0;
+}
+
+u32 I2C_SPISectorErase(
+	u32 address,
+	u32 stFlag
+)
+{
+	u32 timeout;
+	printk("addr:0x%x\n",address);
+	if(!stFlag)
+	{
+		I2C_SPIFlashWrEnable();
+
+		//hsI2CDataWrite(0x40e7,0x00);
+		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+		//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);				/*Write Status register command*/
+		sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS_EN);
+		//hsI2CDataWrite(0x40e7,0x01);
+		sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	}
+
+	//hsI2CDataWrite(0x40e7,0x00);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+	//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);				/*Write Status register command*/
+	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS);
+	//I2C_SPIFlashPortWrite(0x02);
+	sensor_write_reg(info->i2c_client, 0x40e3,0x02);
+	//hsI2CDataWrite(0x40e7,0x01);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+
+	I2C_SPIFlashWrEnable();
+
+	//hsI2CDataWrite(0x40e7,0x00);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+	//I2C_SPIFlashPortWrite(SPI_CMD_SECTOR_ERASE);
+	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_SECTOR_ERASE);
+
+	//I2C_SPIFlashPortWrite(address >> 16);	/* A23~A16 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address >> 16));
+	//I2C_SPIFlashPortWrite(address >> 8);		/* A15~A08 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address >> 8));
+	//I2C_SPIFlashPortWrite(address);			/* A07~A00 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address));
+	//hsI2CDataWrite(0x40e7,0x01);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+
+	timeout = 5000000;
+	I2C_SPITimeOutWait(0x01, &timeout);
+
+	return 0;
+}
+
+u32 I2C_SPI32KBBlockErase(
+	u32 address,
+	u32 stFlag
+)
+{
+	u32 timeout;
+	printk("addr:0x%x\n",address);
+	if(!stFlag)
+	{
+		I2C_SPIFlashWrEnable();
+
+		//hsI2CDataWrite(0x40e7,0x00);
+		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+		//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);				/*Write Status register command*/
+		sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS_EN);
+		//hsI2CDataWrite(0x40e7,0x01);
+		sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	}
+
+	//hsI2CDataWrite(0x40e7,0x00);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+	//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);				/*Write Status register command*/
+	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS);
+	//I2C_SPIFlashPortWrite(0x02);
+	sensor_write_reg(info->i2c_client, 0x40e3,0x02);
+	//hsI2CDataWrite(0x40e7,0x01);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+
+	I2C_SPIFlashWrEnable();
+
+	//hsI2CDataWrite(0x40e7,0x00);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+	//I2C_SPIFlashPortWrite(SPI_CMD_32KB_BLOCK_ERASE);
+	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_32KB_BLOCK_ERASE);
+	//I2C_SPIFlashPortWrite(address >> 16);	/* A23~A16 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address >> 16));
+	//I2C_SPIFlashPortWrite(address >> 8);		/* A15~A08 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address >> 8));
+	//I2C_SPIFlashPortWrite(address);			/* A07~A00 */
+	sensor_write_reg(info->i2c_client, 0x40e3,(u8)(address));
+	//hsI2CDataWrite(0x40e7,0x01);
+	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+
+	timeout = 5000000;
+	I2C_SPITimeOutWait(0x01, &timeout);
+
+	return 0;
+}
+
+void
+BB_EraseSPIFlash(
+	u32 type,
+	u32 spiSize
+)
+{
+	u8 typeFlag;
+	u32 i, temp1;
+	if( type == 2 )/* SST */
+	{
+		typeFlag = 0;
+	}
+	else if( type == 1 || type == 3 )/* ST */
+	{
+		typeFlag = 1;
+	}
+	/*printf("spiSize:0x%x\n",spiSize);*/
+	if(spiSize == (512*1024))
+	{
+		/* skip 0x7B000 ~ 0x7EFF, to keep calibration data */
+		temp1 = (spiSize / 0x10000)-1;
+		for(i=0;i<temp1;i++)
+		{
+			I2C_SPI64KBBlockErase(i*0x10000,typeFlag);
+		}
+		I2C_SPI32KBBlockErase(temp1*0x10000,typeFlag);
+		temp1 = temp1*0x10000 + 0x8000;
+		for(i=temp1;i<spiSize-0x5000;i+=0x1000)
+		{
+			I2C_SPISectorErase(i,typeFlag);
+		}
+		I2C_SPISectorErase(spiSize-0x1000,typeFlag);
+	}
+	else if(spiSize == (1024*1024))
+	{
+		/* only erase 256*3KB */
+		temp1 = ((spiSize*3/4) / 0x10000)-1;
+		for(i=0;i<temp1;i++)
+		{
+			I2C_SPI64KBBlockErase(i*0x10000,typeFlag);
+		}
+		I2C_SPISectorErase(spiSize-0x1000,typeFlag);
+	}
+}
+
 u32 I2C_SPISstFlashWrite(
 	u32 addr,
 	u32 pages,
@@ -1190,7 +1497,12 @@ u32 I2C_SPISstFlashWrite(
 	while( pages ) {
 		page_count = (int)pages;
 		writeUpdateProgresstoFile(page_count, total_page_count);
-
+		if((addr>=0x7C000) && (addr <0x7F000))
+		{
+			addr += 0x1000;
+			pages -= 0x10;
+			continue;
+		}
 		I2C_SPIFlashWrEnable();
 		//hsI2CDataWrite(0x40e7,0x00);
 		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
@@ -1337,7 +1649,7 @@ unsigned int get_fw_version_in_isp(void)
 
 	return vn;
 }
-
+#if 0
 void
 BB_WrSPIFlash(char* binfile_path)
 {
@@ -1472,6 +1784,216 @@ BB_WrSPIFlash(char* binfile_path)
 		flash_type = ICATCH_FLASH_TYPE_ST;
 		printk("ST operation\n");
 		ret = I2C_SPIStChipErase();
+		if(ret) {
+			printk("%s: ST erase fail.\n", __FUNCTION__);
+			kfree(pbootBuf);
+			fw_update_status = ICATCH_FW_UPDATE_FAILED;
+			return;
+		}
+		I2C_SPIFlashWrite(0, pages, pbootBuf);
+	} else {
+		printk("type unknown: %d; Won't update iCatch FW.\n", type);
+		fw_update_status = ICATCH_FW_UPDATE_FAILED;
+		kfree(pbootBuf);
+		return;
+	}
+	kfree(pbootBuf);
+
+	/* Check the update reult. */
+	/* Compare Check sum here */
+	get_one_page_from_i7002a(0, tmp_page);
+	memcpy(checksum1_in_isp, tmp_page + 10, 2);
+
+	if (memcmp(checksum1_in_isp, checksum1_in_bin, 2) == 0) {
+		/* checksum1 PASS */
+		firmware2_offset = 16 +
+			((tmp_page[3] << 24) | (tmp_page[2] << 16) | (tmp_page[1] << 8) | tmp_page[0]) +
+			((tmp_page[7] << 24) | (tmp_page[6] << 16) | (tmp_page[5] << 8) | tmp_page[4]);
+
+		get_one_page_from_i7002a(firmware2_offset >> 8, tmp_page);
+		memcpy(checksum2_in_isp, tmp_page + 10, 2);
+
+		if (memcmp(checksum2_in_isp, checksum2_in_bin, 2) == 0) {
+			/* checksum2 PASS */
+			version_num_in_isp = get_fw_version_in_isp();
+			if (version_num_in_isp == version_num_in_bin) {
+				/* version number PASS */
+				fw_update_status = ICATCH_FW_UPDATE_SUCCESS;
+				printk("%s: ICATCH FW UPDATE SUCCESS.\n", __FUNCTION__);
+			} else {
+				/* version number FAIL */
+				fw_update_status = ICATCH_FW_UPDATE_FAILED;
+				printk("%s: check version FAIL: ISP(0x%06X) != BIN(0x%06X)\n", __FUNCTION__, version_num_in_isp, version_num_in_bin);
+				version_num_in_isp = 0xABCDEF;
+				fw_front_type_in_isp = 0;
+			}
+		} else {
+			/* checksum2 FAIL */
+			fw_update_status = ICATCH_FW_UPDATE_FAILED;
+			printk("%s: checksum2 FAIL: ISP(%02X %02X) != BIN(%02X %02X)\n",
+				__FUNCTION__, checksum2_in_isp[0], checksum2_in_isp[1],
+				checksum2_in_bin[0], checksum2_in_bin[1]);
+			version_num_in_isp = 0xABCDEF;
+			fw_front_type_in_isp = 0;
+		}
+	} else {
+		/* checksum1 FAIL */
+		fw_update_status = ICATCH_FW_UPDATE_FAILED;
+		printk("%s: checksum1 FAIL: ISP(%02X %02X) != BIN(%02X %02X)\n",
+			__FUNCTION__, checksum1_in_isp[0], checksum1_in_isp[1],
+			checksum1_in_bin[0], checksum1_in_bin[1]);
+		version_num_in_isp = 0xABCDEF;
+		fw_front_type_in_isp = 0;
+	}
+}
+#endif
+void
+BB_WrSPIFlash(char* binfile_path)
+{
+	u32 id, type;
+	u32 pages, spiSize;
+
+	u8 *pbootBuf;
+	u8 bin_file_header[BIN_FILE_HEADER_SIZE];
+	u8 checksum1_in_bin[2], checksum2_in_bin[2];
+	u8 checksum1_in_isp[2], checksum2_in_isp[2];
+	unsigned int version_num_in_bin = 0xFFFFFF;
+	int firmware2_offset;
+	u8 tmp_page[0x100];
+
+	struct file *fp = NULL;
+	mm_segment_t old_fs;
+	struct inode *inode;
+	int bootbin_size = 0;
+	int i, ret = 0;
+
+	fw_update_status = ICATCH_FW_IS_BURNING;
+
+	/* Calculate BOOT.BIN file size. */
+	fp = filp_open(binfile_path, O_RDONLY, 0);
+
+	if ( !IS_ERR_OR_NULL(fp) ){
+		pr_info("filp_open success fp:%p\n", fp);
+		inode = fp->f_dentry->d_inode;
+		bootbin_size = inode->i_size;
+		printk("%s: fp->f_dentry->d_inode->i_size=%d\n", __FUNCTION__, bootbin_size);
+		pbootBuf = kmalloc(bootbin_size, GFP_KERNEL);
+		old_fs = get_fs();
+		set_fs(KERNEL_DS);
+		if(fp->f_op != NULL && fp->f_op->read != NULL){
+			int byte_count= 0;
+			printk("Start to read %s\n", binfile_path);
+
+			byte_count = fp->f_op->read(fp, pbootBuf, bootbin_size, &fp->f_pos);
+
+			if (byte_count <= 0) {
+				printk("iCatch: EOF or error. last byte_count= %d;\n", byte_count);
+				kfree(pbootBuf);
+				fw_update_status = ICATCH_FW_UPDATE_FAILED;
+				return;
+			} else
+				printk("iCatch: BIN file size= %d bytes\n", bootbin_size);
+
+#if 0
+			for(i=0; i < bootbin_size; i++) {
+				printk("%c", pbootBuf[i]);
+			}
+			printk("\n");
+#endif
+		}
+		set_fs(old_fs);
+		filp_close(fp, NULL);
+	} else if(PTR_ERR(fp) == -ENOENT) {
+		pr_err("iCatch \"%s\" not found error\n", binfile_path);
+		fw_update_status = ICATCH_FW_UPDATE_FAILED;
+		return;
+	} else{
+		pr_err("iCatch \"%s\" open error\n", binfile_path);
+		fw_update_status = ICATCH_FW_UPDATE_FAILED;
+		return;
+	}
+
+	for (i=0; i < BIN_FILE_HEADER_SIZE; i++)
+	{
+		bin_file_header[i] = pbootBuf[bootbin_size - BIN_FILE_HEADER_SIZE + i];
+		printk("%s: bin_file_header[%d]= 0x%x\n", __FUNCTION__, i,bin_file_header[i]);
+	}
+	version_num_in_bin = (bin_file_header[30] << 16) | (bin_file_header[29] << 8) | bin_file_header[28];
+
+	/* Get the checksum in bin file.
+	 *   firmware2_offset
+	 *     = fw1 header size
+	 *     + fw1 DMEM FICDMEM size
+	 *     + fw1 IMEM size
+	 */
+	memcpy(checksum1_in_bin, pbootBuf + 10, 2);
+
+	firmware2_offset = 16 +
+		((pbootBuf[3] << 24) | (pbootBuf[2] << 16) | (pbootBuf[1] << 8) | pbootBuf[0]) +
+		((pbootBuf[7] << 24) | (pbootBuf[6] << 16) | (pbootBuf[5] << 8) | pbootBuf[4]);
+	memcpy(checksum2_in_bin, pbootBuf + firmware2_offset + 10, 2);
+
+	printk("%s: checksum in bin:%02X %02X; %02X %02X\n", __FUNCTION__,
+		checksum1_in_bin[0],checksum1_in_bin[1],checksum2_in_bin[0], checksum2_in_bin[1]);
+
+	ret = I2C_SPIInit();
+	if (ret) {
+		printk("%s: SPI init fail. ret= 0x%x", __FUNCTION__, ret);
+		kfree(pbootBuf);
+		fw_update_status = ICATCH_FW_UPDATE_FAILED;
+		return;
+	}
+
+	id = I2C_SPIFlashReadId();
+
+	if(id==0) {
+		printk("read id failed\n");
+		kfree(pbootBuf);
+		fw_update_status = ICATCH_FW_UPDATE_FAILED;
+		return;
+	}
+
+	type = BB_SerialFlashTypeCheck(id, &spiSize);
+	if(type == 0) {
+		printk("BB_SerialFlashTypeCheck(%d) failed\n", id);
+		kfree(pbootBuf);
+		fw_update_status = ICATCH_FW_UPDATE_FAILED;
+		return;
+	}
+
+	pages = bootbin_size/0x100;//for 8Mb spi flash test
+	/*8Mb spi flash: seems we do not need it.
+	if( size > 0 && size < bootbin_size )
+	{
+		pages = size/0x100;
+		if((size%0x100)!=0)
+			pages += 1;
+	}
+	else
+	{
+		pages = bootbin_size/0x100;
+	}
+	*/
+	printk("%s: pages:0x%x\n", __FUNCTION__, pages);
+
+	BB_EraseSPIFlash(type,spiSize);//for 8Mb spi flash test
+
+	/* Writing Flash here */
+	if( type == 2 ) {
+		flash_type = ICATCH_FLASH_TYPE_SST;
+		printk("SST operation\n");
+		//ret = I2C_SPISstChipErase();
+		if(ret) {
+			printk("%s: SST erase fail.\n", __FUNCTION__);
+			kfree(pbootBuf);
+			fw_update_status = ICATCH_FW_UPDATE_FAILED;
+			return;
+		}
+		I2C_SPISstFlashWrite(0, pages, pbootBuf);
+	} else if( type == 1 || type == 3 ) {
+		flash_type = ICATCH_FLASH_TYPE_ST;
+		printk("ST operation\n");
+		//ret = I2C_SPIStChipErase();
 		if(ret) {
 			printk("%s: ST erase fail.\n", __FUNCTION__);
 			kfree(pbootBuf);
@@ -1804,7 +2326,7 @@ static long sensor_ioctl(struct file *file,
                     err = sensor_write_reg(info->i2c_client, 0x7109, 0x0E);
                     break;
                 case YUV_SceneMode_Snow:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x18);
+                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x0B);
                     break;
                 case YUV_SceneMode_Party:
                     err = sensor_write_reg(info->i2c_client, 0x7109, 0x09);
@@ -2879,6 +3401,87 @@ static ssize_t dbg_i7002a_page_dump_read(struct file *file, char __user *buf, si
 	return tot;
 }
 
+static ssize_t dbg_i7002a_bin_dump_open(struct inode *inode, struct file *file)
+{
+	file->private_data = inode->i_private;
+	return 0;
+}
+
+static ssize_t dbg_i7002a_bin_dump_read(struct file *file, char __user *buf, size_t count,
+				loff_t *ppos)
+{
+	int len, tot = 0;
+	char debug_buf[1024];
+	int dlen = sizeof(debug_buf);
+	char *bp = debug_buf;
+	int i = 0;
+	int ret = 0;
+	char* mybin;
+	struct file *fp_bin_dump = NULL;
+	mm_segment_t old_fs;
+	loff_t offset = 0;
+
+	printk("%s: buf=%p, count=%d, ppos=%p; *ppos= %d\n", __FUNCTION__, buf, count, ppos, *ppos);
+
+	if (*ppos)
+		return 0;	/* the end */
+
+	i7002a_isp_on(1);
+
+	//I2CDataWrite(0x70c4,0x00);
+	//I2CDataWrite(0x70c5,0x00);
+	sensor_write_reg(info->i2c_client, 0x70c4,0x00);
+	sensor_write_reg(info->i2c_client, 0x70c5,0x00);
+
+	ret = I2C_SPIInit();
+	if (ret) {
+		printk("%s: get nothing. ret= %d", __FUNCTION__, ret);
+		return;
+	}
+
+	I2C_SPIFlashReadId();
+
+		mybin = kmalloc(512*1024, GFP_KERNEL);
+		I2C_SPIFlashRead(0, 2048, mybin);
+	i7002a_isp_on(0);
+
+	/* Dump to /data/bin_dump.bin */
+	fp_bin_dump = filp_open("/data/bin_dump.bin", O_RDWR | O_CREAT, S_IRUGO | S_IWUGO);
+	if ( IS_ERR_OR_NULL(fp_bin_dump) ){
+		filp_close(fp_bin_dump, NULL);
+		len = snprintf(bp, dlen, "%s: open %s fail\n", __FUNCTION__, "/data/bin_dump.bin");
+		tot += len; bp += len; dlen -= len;
+	}
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	offset = 0;
+
+	if (fp_bin_dump->f_op != NULL && fp_bin_dump->f_op->write != NULL){
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)
+			fp_bin_dump->f_op->write(fp_bin_dump, mybin, 1024*1024, &offset);
+		else
+			fp_bin_dump->f_op->write(fp_bin_dump, mybin, 512*1024, &offset);
+
+	}
+	else {
+		len = snprintf(bp, dlen, "%s: f_op might be null\n", __FUNCTION__);
+		tot += len; bp += len; dlen -= len;
+	}
+	set_fs(old_fs);
+	filp_close(fp_bin_dump, NULL);
+	kfree(mybin);
+
+	len = snprintf(bp, dlen, "%s: Dump Complete.\n", __FUNCTION__);
+	tot += len; bp += len; dlen -= len;
+
+	if (copy_to_user(buf, debug_buf, tot))
+		return -EFAULT;
+	if (tot < 0)
+		return 0;
+	*ppos += tot;	/* increase offset */
+	return tot;
+}
+
 static ssize_t dbg_i7002a_fw_header_dump_open(struct inode *inode, struct file *file)
 {
 	file->private_data = inode->i_private;
@@ -3483,6 +4086,11 @@ static const struct file_operations dbg_i7002a_page_dump_fops = {
 	.read		= dbg_i7002a_page_dump_read,
 };
 
+static const struct file_operations dbg_i7002a_bin_dump_fops = {
+	.open		= dbg_i7002a_bin_dump_open,
+	.read		= dbg_i7002a_bin_dump_read,
+};
+
 static const struct file_operations dbg_fw_update_fops = {
 	.open		= dbg_fw_update_open,
 	.read		= dbg_fw_update_read,
@@ -3535,6 +4143,9 @@ static const struct file_operations iCatch7002a_power_fops = {
 
 	(void) debugfs_create_file("page_dump", S_IRUGO | S_IWUSR,
 					dent, NULL, &dbg_i7002a_page_dump_fops);
+
+	(void) debugfs_create_file("bin_dump", S_IRUGO | S_IWUSR,
+					dent, NULL, &dbg_i7002a_bin_dump_fops);
 
 	(void) debugfs_create_file("fw_header_dump", S_IRUGO | S_IWUSR,
 					dent, NULL, &dbg_i7002a_fw_header_dump_fops);
