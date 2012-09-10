@@ -100,6 +100,7 @@ struct tps80031_regulator {
 	/* chip constraints on regulator behavior */
 	u16			min_mV;
 	u16			max_mV;
+	unsigned int		tolerance_uv;
 
 	/* regulator specific turn-on delay */
 	int			delay;
@@ -220,7 +221,7 @@ static int tps80031dcdc_list_voltage(struct regulator_dev *rdev, unsigned index)
 		if (index == 0)
 			voltage = 0;
 		else if (index < 58)
-			voltage = (600000 + (12500 * (index - 1)));
+			voltage = (607700 + (12660 * (index - 1)));
 		else if (index == 58)
 			voltage = 1350 * 1000;
 		else if (index == 59)
@@ -296,16 +297,22 @@ static int __tps80031_dcdc_set_voltage(struct device *parent,
 	int vsel = 0;
 	int ret;
 
+	min_uV = min_uV - ri->tolerance_uv;
+
 	switch (ri->flags) {
 	case 0:
 		if (min_uV == 0)
 			vsel = 0;
-		else if ((min_uV >= 600000) && (max_uV <= 1300000)) {
-			vsel = (min_uV - 600000) / 125;
+		else if ((min_uV >= 607700) && (min_uV <= 1300000)) {
+			int cal_volt;
+			vsel = (10 * (min_uV - 607700)) / 1266;
 			if (vsel % 100)
 				vsel += 100;
 			vsel /= 100;
 			vsel++;
+			cal_volt = (607700 + (12660 * (vsel - 1)));
+			if (cal_volt > max_uV)
+				return -EINVAL;
 		} else if ((min_uV > 1900000) && (max_uV >= 2100000))
 			vsel = 62;
 		else if ((min_uV > 1800000) && (max_uV >= 1900000))
@@ -323,17 +330,21 @@ static int __tps80031_dcdc_set_voltage(struct device *parent,
 	case DCDC_OFFSET_EN:
 		if (min_uV == 0)
 			vsel = 0;
-		else if ((min_uV >= 700000) && (max_uV <= 1420000)) {
-			vsel = (min_uV - 600000) / 125;
+		else if ((min_uV >= 700000) && (min_uV <= 1420000)) {
+			int cal_volt;
+			vsel = (min_uV - 700000) / 125;
 			if (vsel % 100)
 				vsel += 100;
 			vsel /= 100;
 			vsel++;
+			cal_volt = (700000 + (12500 * (vsel - 1)));
+			if (cal_volt > max_uV)
+				return -EINVAL;
 		} else if ((min_uV > 1900000) && (max_uV >= 2100000))
 			vsel = 62;
 		else if ((min_uV > 1800000) && (max_uV >= 1900000))
 			vsel = 61;
-		else if ((min_uV > 1350000) && (max_uV >= 1800000))
+		else if ((min_uV > 1500000) && (max_uV >= 1800000))
 			vsel = 60;
 		else if ((min_uV > 1350000) && (max_uV >= 1500000))
 			vsel = 59;
@@ -350,7 +361,6 @@ static int __tps80031_dcdc_set_voltage(struct device *parent,
 			vsel = (min_uV - 1852000) / 386;
 			if (vsel % 100)
 				vsel += 100;
-			vsel /= 100;
 			vsel++;
 		}
 		break;
@@ -359,7 +369,7 @@ static int __tps80031_dcdc_set_voltage(struct device *parent,
 		if (min_uV == 0)
 			vsel = 0;
 		else if ((min_uV >= 2161000) && (max_uV <= 4321000)) {
-			vsel = (min_uV - 1852000) / 386;
+			vsel = (min_uV - 2161000) / 386;
 			if (vsel % 100)
 				vsel += 100;
 			vsel /= 100;
@@ -422,7 +432,7 @@ decode:
 		if (vsel == 0)
 			voltage = 0;
 		else if (vsel < 58)
-			voltage = (600000 + (12500 * (vsel - 1)));
+			voltage = (607700 + (12660 * (vsel - 1)));
 		else if (vsel == 58)
 			voltage = 1350 * 1000;
 		else if (vsel == 59)
@@ -794,11 +804,11 @@ static int tps80031_power_req_config(struct device *parent,
 		struct tps80031_regulator *ri,
 		struct tps80031_regulator_platform_data *tps80031_pdata)
 {
-	int ret;
+	int ret = 0;
 	uint8_t reg_val;
 
 	if (ri->preq_bit < 0)
-		return 0;
+		goto skip_pwr_req_config;
 
 	ret = tps80031_ext_power_req_config(parent, ri->ext_ctrl_flag,
 			ri->preq_bit, ri->state_reg, ri->trans_reg);
@@ -814,6 +824,7 @@ static int tps80031_power_req_config(struct device *parent,
 		return ret;
 	}
 
+skip_pwr_req_config:
 	if (tps80031_pdata->ext_ctrl_flag &
 			(PWR_OFF_ON_SLEEP | PWR_ON_ON_SLEEP)) {
 		reg_val = (ri->trans_reg_cache & ~0xC);
@@ -1017,6 +1028,7 @@ static int __devinit tps80031_regulator_probe(struct platform_device *pdev)
 	ri->dev = &pdev->dev;
 	if (tps_pdata->delay_us > 0)
 		ri->delay = tps_pdata->delay_us;
+	ri->tolerance_uv = tps_pdata->tolerance_uv;
 
 	check_smps_mode_mult(pdev->dev.parent, ri);
 	ri->platform_flags = tps_pdata->flags;

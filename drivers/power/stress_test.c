@@ -18,6 +18,7 @@
 #define START_NORMAL (1)
 #define START_HEAVY (2)
 #define IOCTL_ERROR (-1)
+extern unsigned int boot_reason;
 static void battery_strees_test(struct work_struct *work)
 {
 
@@ -34,8 +35,6 @@ static void battery_strees_test(struct work_struct *work)
 
 long battery_ioctl(struct file *filp,unsigned int cmd, unsigned long arg)
 {
-       int fc=0;
-	int battery_status=0;
 	if (_IOC_TYPE(cmd) == BATTERY_IOC_MAGIC ){
 	     //printk("  battery_ioctl vaild magic \n");
 		}
@@ -56,7 +55,8 @@ long battery_ioctl(struct file *filp,unsigned int cmd, unsigned long arg)
                case BATTERY_REBOOT_TEST_TOOL:
 			break;
 		case BOOT_REASON:
-			printk(" BATTERY: BOOT_REASON\n");
+			(*(int*)arg)=boot_reason;
+			printk(" BATTERY: BOOT_REASON=%u\n",(*(int*)arg));
 			break;
 	  default:  /* redundant, as cmd was checked against MAXNR */
 	           printk(" BATTERY: unknow i2c  stress test  command cmd=%x arg=%lu\n",cmd,arg);

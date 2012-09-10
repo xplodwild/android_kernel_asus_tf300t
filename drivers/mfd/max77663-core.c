@@ -3,7 +3,7 @@
  * Max77663 mfd driver (I2C bus access)
  *
  * Copyright 2011 Maxim Integrated Products, Inc.
- * Copyright (C) 2011 NVIDIA Corporation
+ * Copyright (C) 2011-2012 NVIDIA Corporation
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -57,6 +57,7 @@
 #define MAX77663_REG_GPIO_PD		0x3F
 #define MAX77663_REG_GPIO_ALT		0x40
 #define MAX77663_REG_ONOFF_CFG1		0x41
+#define MAX77663_REG_ONOFF_CFG2		0x42
 
 #define IRQ_TOP_GLBL_MASK		(1 << 7)
 #define IRQ_TOP_GLBL_SHIFT		7
@@ -113,6 +114,11 @@
 
 #define ONOFF_SFT_RST_MASK		(1 << 7)
 #define ONOFF_SLPEN_MASK		(1 << 2)
+#define ONOFF_PWR_OFF_MASK		(1 << 1)
+
+#define ONOFF_SLP_LPM_MASK		(1 << 5)
+
+#define ONOFF_IRQ_EN0_RISING		(1 << 3)
 
 enum {
 	CACHE_IRQ_LBT,
@@ -154,6 +160,8 @@ struct max77663_chip {
 	u8 cache_gpio_pu;
 	u8 cache_gpio_pd;
 	u8 cache_gpio_alt;
+
+	u8 rtc_i2c_addr;
 };
 
 struct max77663_chip *max77663_chip;
@@ -236,6 +244,15 @@ static struct max77663_irq_data max77663_irqs[MAX77663_IRQ_NR] = {
 	},
 };
 
+/* MAX77663 PMU doesn't allow PWR_OFF and SFT_RST setting in ONOFF_CFG1
+ * at the same time. So if it try to set PWR_OFF and SFT_RST to ONOFF_CFG1
+ * simultaneously, handle only SFT_RST and ignore PWR_OFF.
+ */
+#define CHECK_ONOFF_CFG1_MASK	(ONOFF_SFT_RST_MASK | ONOFF_PWR_OFF_MASK)
+#define CHECK_ONOFF_CFG1(_addr, _val)			\
+	unlikely((_addr == MAX77663_REG_ONOFF_CFG1) &&	\
+		 ((_val & CHECK_ONOFF_CFG1_MASK) == CHECK_ONOFF_CFG1_MASK))
+
 static inline int max77663_i2c_write(struct i2c_client *client, u8 addr,
 				     void *src, u32 bytes)
 {
@@ -245,7 +262,7 @@ static inline int max77663_i2c_write(struct i2c_client *client, u8 addr,
 	dev_dbg(&client->dev, "i2c_write: addr=0x%02x, src=0x%02x, bytes=%u\n",
 		addr, *((u8 *)src), bytes);
 
-	if (client->addr == MAX77663_RTC_I2C_ADDR) {
+	if (client->addr == max77663_chip->rtc_i2c_addr) {
 		/* RTC registers support sequential writing */
 		buf[0] = addr;
 		memcpy(&buf[1], src, bytes);
@@ -255,10 +272,14 @@ static inline int max77663_i2c_write(struct i2c_client *client, u8 addr,
 		int i;
 
 		for (i = 0; i < (bytes * 2); i++) {
-			if (i % 2)
-				buf[i] = *src8++;
-			else
+			if (i % 2) {
+				if (CHECK_ONOFF_CFG1(buf[i - 1], *src8))
+					buf[i] = *src8++ & ~ONOFF_PWR_OFF_MASK;
+				else
+					buf[i] = *src8++;
+			} else {
 				buf[i] = addr++;
+			}
 		}
 		bytes = (bytes * 2) - 1;
 	}
@@ -353,25 +374,37 @@ int max77663_set_bits(struct device *dev, u8 addr, u8 mask, u8 value,
 }
 EXPORT_SYMBOL(max77663_set_bits);
 
-int max77663_power_off(void)
+static void max77663_power_off(void)
 {
 	struct max77663_chip *chip = max77663_chip;
 
 	if (!chip)
-		return -EINVAL;
+		return;
 
 	dev_info(chip->dev, "%s: Global shutdown\n", __func__);
-	return max77663_set_bits(chip->dev, MAX77663_REG_ONOFF_CFG1,
-				 ONOFF_SFT_RST_MASK, ONOFF_SFT_RST_MASK, 0);
+	max77663_set_bits(chip->dev, MAX77663_REG_ONOFF_CFG1,
+			  ONOFF_SFT_RST_MASK, ONOFF_SFT_RST_MASK, 0);
 }
-EXPORT_SYMBOL(max77663_power_off);
 
-static int max77663_sleep_enable(struct max77663_chip *chip)
+static int max77663_sleep(struct max77663_chip *chip, bool on)
 {
+	int ret = 0;
+
+	if (chip->pdata->flags & SLP_LPM_ENABLE) {
+		/* Put the power rails into Low-Power mode during sleep mode,
+		 * if the power rail's power mode is GLPM. */
+		ret = max77663_set_bits(chip->dev, MAX77663_REG_ONOFF_CFG2,
+					ONOFF_SLP_LPM_MASK,
+					on ? ONOFF_SLP_LPM_MASK : 0, 0);
+		if (ret < 0)
+			return ret;
+	}
+
 	/* Enable sleep that AP can be placed into sleep mode
 	 * by pulling EN1 low */
 	return max77663_set_bits(chip->dev, MAX77663_REG_ONOFF_CFG1,
-				 ONOFF_SLPEN_MASK, ONOFF_SLPEN_MASK, 0);
+				 ONOFF_SLPEN_MASK,
+				 on ? ONOFF_SLPEN_MASK : 0, 0);
 }
 
 static inline int max77663_cache_write(struct device *dev, u8 addr, u8 mask,
@@ -872,6 +905,8 @@ static void max77663_irq_sync_unlock(struct irq_data *data)
 				irq_mask = irq_data->trigger_type;
 			else
 				irq_mask = GPIO_REFE_IRQ_EDGE_FALLING << shift;
+		} else {
+			irq_mask = GPIO_REFE_IRQ_NONE << shift;
 		}
 
 		ret = max77663_cache_write(chip->dev, GPIO_REG_ADDR(offset),
@@ -1101,6 +1136,10 @@ static int max77663_irq_init(struct max77663_chip *chip)
 	max77663_write(chip->dev, MAX77663_REG_LBT_IRQ_MASK,
 		       &chip->cache_irq_mask[CACHE_IRQ_LBT], 1, 0);
 
+	chip->cache_irq_mask[CACHE_IRQ_ONOFF] &= ~ONOFF_IRQ_EN0_RISING;
+	max77663_write(chip->dev, MAX77663_REG_ONOFF_IRQ_MASK,
+		       &chip->cache_irq_mask[CACHE_IRQ_ONOFF], 1, 0);
+
 	return 0;
 }
 
@@ -1275,7 +1314,12 @@ static int max77663_probe(struct i2c_client *client,
 	chip->i2c_power = client;
 	i2c_set_clientdata(client, chip);
 
-	chip->i2c_rtc = i2c_new_dummy(client->adapter, MAX77663_RTC_I2C_ADDR);
+	if (pdata->rtc_i2c_addr)
+		chip->rtc_i2c_addr = pdata->rtc_i2c_addr;
+	else
+		chip->rtc_i2c_addr = MAX77663_RTC_I2C_ADDR;
+
+	chip->i2c_rtc = i2c_new_dummy(client->adapter, chip->rtc_i2c_addr);
 	i2c_set_clientdata(chip->i2c_rtc, chip);
 
 	chip->dev = &client->dev;
@@ -1287,11 +1331,18 @@ static int max77663_probe(struct i2c_client *client,
 	max77663_gpio_init(chip);
 	max77663_irq_init(chip);
 	max77663_debugfs_init(chip);
-	max77663_sleep_enable(chip);
+	ret = max77663_sleep(chip, false);
+	if (ret < 0) {
+		dev_err(&client->dev, "probe: Failed to disable sleep\n");
+		goto out_exit;
+	}
+
+	if (pdata->use_power_off && !pm_power_off)
+		pm_power_off = max77663_power_off;
 
 	ret = mfd_add_devices(&client->dev, 0, pdata->sub_devices,
 			      pdata->num_subdevs, NULL, 0);
-	if (ret  != 0) {
+	if (ret != 0) {
 		dev_err(&client->dev, "probe: Failed to add subdev: %d\n", ret);
 		goto out_exit;
 	}
@@ -1334,7 +1385,7 @@ static int max77663_suspend(struct device *dev)
 	if (client->irq)
 		disable_irq(client->irq);
 
-	ret = max77663_sleep_enable(chip);
+	ret = max77663_sleep(chip, true);
 	if (ret < 0)
 		dev_err(dev, "suspend: Failed to enable sleep\n");
 
@@ -1347,9 +1398,9 @@ static int max77663_resume(struct device *dev)
 	struct max77663_chip *chip = i2c_get_clientdata(client);
 	int ret;
 
-	ret = max77663_sleep_enable(chip);
+	ret = max77663_sleep(chip, false);
 	if (ret < 0) {
-		dev_err(dev, "resume: Failed to enable sleep\n");
+		dev_err(dev, "resume: Failed to disable sleep\n");
 		return ret;
 	}
 
@@ -1389,7 +1440,7 @@ static int __init max77663_init(void)
 {
 	return i2c_add_driver(&max77663_driver);
 }
-arch_initcall(max77663_init);
+subsys_initcall(max77663_init);
 
 static void __exit max77663_exit(void)
 {

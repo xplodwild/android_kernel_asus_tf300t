@@ -30,7 +30,7 @@
  *	=======================================
  *	PCB_ID[5] PCB_ID[4] PCB_ID[3]	Project
  *	0	  0	    0		TF201
- *	0	  0	    1		ME370T
+ *	0	  0	    1		P1801
  *	0	  1	    0		TF300T
  *	0	  1	    1		TF300TG
  *	1	  0	    0		TF700T
@@ -109,17 +109,24 @@ extern "C"
 
 /* Project identifications on Tegra3 platform */
 #define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_RANGE	5:3
-#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_DEFAULT	0x0UL //TF201
-#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_1	0x1UL //ME370T
-#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_2	0x2UL //TF300T
-#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_3	0x3UL //TF300TG
-#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_4	0x4UL //TF700T
-#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_5	0x5UL //TF300TL
-#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_6	0x6UL //Reserve
-#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_7	0x7UL //TF500T
+#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_DEFAULT	0x0UL
+#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_1	0x1UL
+#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_2	0x2UL
+#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_3	0x3UL
+#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_4	0x4UL
+#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_5	0x5UL
+#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_6	0x6UL
+#define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_7	0x7UL
 
 /* Declare maximum length of project identification for strncmp() */
 #define TEGRA3_PROJECT_NAME_MAX_LEN	16
+
+/* PCBA HW revision */
+#define TEGRA3_DEVKIT_MISC_HW_0_REVISION_RANGE	7:6
+#define TEGRA3_DEVKIT_MISC_HW_0_REVISION_DEFAULT	0x0UL
+#define TEGRA3_DEVKIT_MISC_HW_0_REVISION_1		0x1UL
+#define TEGRA3_DEVKIT_MISC_HW_0_REVISION_2		0x2UL
+#define TEGRA3_DEVKIT_MISC_HW_0_REVISION_3		0x3UL
 
 /* Audio Codec SKU identifications */
 #define TEGRA3_DEVKIT_MISC_HW_0_ACODEC_RANGE	7:6
@@ -138,14 +145,14 @@ extern unsigned char cardhu_chipid[17];
 enum tegra3_project {
 	TEGRA3_PROJECT_INVALID = -1,
 	TEGRA3_PROJECT_TF201 = 0,
-	TEGRA3_PROJECT_ME370T,
-	TEGRA3_PROJECT_TF300T,
-	TEGRA3_PROJECT_TF300TG,
-	TEGRA3_PROJECT_TF700T,
-	TEGRA3_PROJECT_TF300TL,
-	TEGRA3_PROJECT_ReserveB,
-	TEGRA3_PROJECT_TF500T,
-	TEGRA3_PROJECT_MAX,
+	TEGRA3_PROJECT_P1801 = 1,
+	TEGRA3_PROJECT_TF300T = 2,
+	TEGRA3_PROJECT_TF300TG = 3,
+	TEGRA3_PROJECT_TF700T = 4,
+	TEGRA3_PROJECT_TF300TL = 5,
+	TEGRA3_PROJECT_ReserveB = 6,
+	TEGRA3_PROJECT_TF500T = 7,
+	TEGRA3_PROJECT_MAX = 8,
 };
 
 int __init cardhu_misc_init(void);
@@ -177,6 +184,13 @@ unsigned int tegra3_query_touch_module_pcbid(void);
  *      Otherwise -1 (Not supported) will be returned.
  */
 unsigned int tegra3_query_audio_codec_pcbid(void);
+
+/* Query pin status of equipped hw revision of development PCBA defined in PCB pins.
+ *   @ret bool
+ *      Return unsigned integer to reflect the PCB pin status of equipped PCBA.
+ *      Otherwise -1 (Not supported) will be returned.
+ */
+unsigned int tegra3_query_pcba_revision_pcbid(void);
 
 /* Query pin status of equipped wifi module defined in PCB pins.
  *   @ret bool

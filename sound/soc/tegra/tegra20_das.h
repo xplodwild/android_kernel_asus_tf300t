@@ -98,7 +98,7 @@ struct tegra20_das {
 
 #ifdef CONFIG_PM
 /* Restores the das registers from cache */
-extern int tegra20_das_resume();
+extern int tegra20_das_resume(void);
 #endif
 /*
  * Terminology:
@@ -142,5 +142,7 @@ extern int tegra20_das_connect_dap_to_dap(int dap_id, int other_dap_sel,
  * dap_sel: DAP to receive input from: TEGRA20_DAS_DAC_SEL_DAP*
  */
 extern int tegra20_das_connect_dac_to_dap(int dac_id, int dap_sel);
+
+extern void tegra20_das_set_tristate(int dap_id, int is_tristate);
 
 #endif

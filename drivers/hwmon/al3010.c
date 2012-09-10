@@ -47,8 +47,8 @@
 #define AL3010_IOCTL_START_NORMAL 1
 #define AL3010_IOCTL_END 0
 
-#define START_NORMAL	(HZ)
-#define START_HEAVY	(HZ)
+#define START_NORMAL    (HZ)
+#define START_HEAVY     (HZ)
 
 #define CAL_ALS_PATH "/data/lightsensor/AL3010_Config.ini"
 
@@ -477,18 +477,18 @@ static ssize_t al3010_show_default_lux(struct device *dev,
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
-	al3010_later_init(client);
+        al3010_later_init(client);
     int show_lux_value = al3010_get_adc_value(client);
     int show_default_lux_value = (show_lux_value*calibration_regs)/default_calibration_regs;
 	return sprintf(buf, "%d\n", show_default_lux_value);
 }
 
-static SENSOR_DEVICE_ATTR(show_reg, 0755, al3010_show_reg, NULL, 1);
-static SENSOR_DEVICE_ATTR(show_lux, 0755, al3010_show_lux, NULL, 2);
-static SENSOR_DEVICE_ATTR(lightsensor_status, 0755, al3010_show_power_state, NULL, 3);
-static SENSOR_DEVICE_ATTR(refresh_cal, 0755, al3010_refresh_calibration, NULL, 4);
-static SENSOR_DEVICE_ATTR(show_revise_lux, 0755, al3010_show_revise_lux, NULL, 5);
-static SENSOR_DEVICE_ATTR(show_default_lux, 0755, al3010_show_default_lux, NULL, 6);
+static SENSOR_DEVICE_ATTR(show_reg, 0644, al3010_show_reg, NULL, 1);
+static SENSOR_DEVICE_ATTR(show_lux, 0644, al3010_show_lux, NULL, 2);
+static SENSOR_DEVICE_ATTR(lightsensor_status, 0644, al3010_show_power_state, NULL, 3);
+static SENSOR_DEVICE_ATTR(refresh_cal, 0644, al3010_refresh_calibration, NULL, 4);
+static SENSOR_DEVICE_ATTR(show_revise_lux, 0644, al3010_show_revise_lux, NULL, 5);
+static SENSOR_DEVICE_ATTR(show_default_lux, 0644, al3010_show_default_lux, NULL, 6);
 
 static struct attribute *al3010_attributes[] = {
 	&sensor_dev_attr_show_reg.dev_attr.attr,

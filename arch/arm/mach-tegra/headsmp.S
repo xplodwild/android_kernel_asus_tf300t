@@ -48,7 +48,6 @@
  *	 of secondary CPUs.
  */
 ENTRY(tegra_secondary_startup)
-	bl	tegra_enable_coresite
 	bl	__invalidate_cpu_state
 	b	secondary_startup
 ENDPROC(tegra_secondary_startup)
@@ -63,7 +62,6 @@ ENDPROC(tegra_secondary_startup)
  *	  re-enabling sdram.
  */
 ENTRY(tegra_resume)
-	bl	tegra_enable_coresite
 	bl	__invalidate_cpu_state
 
 	cpu_id	r0
@@ -84,6 +82,11 @@ ENTRY(tegra_resume)
 	mov32	r0, TEGRA_ARM_PERIF_BASE
 	ldr	r1, [r0]
 	orr	r1, r1, #1
+#if defined(CONFIG_HAVE_ARM_SCU)
+	orr	r1, r1, #(1 << 3)	@ Enable SCU speculative line fill.
+	orr	r1, r1, #(1 << 5)	@ Enable IC standby.
+	orr	r1, r1, #(1 << 6)	@ Enable SCU standby.
+#endif
 	str	r1, [r0]
 
 #ifdef CONFIG_TRUSTED_FOUNDATIONS
@@ -166,12 +169,6 @@ tegra_invalidate_l1:
 	isb
 	mov	pc, lr
 
-	/* Enable Coresight access on cpu */
-tegra_enable_coresite:
-	mov32	r0, 0xC5ACCE55
-	mcr	p14, 0, r0, c7, c12, 6
-	mov	pc, lr
-
 /*
  * __tegra_cpu_reset_handler_halt_failed:
  *
@@ -204,8 +201,6 @@ ENTRY(__tegra_cpu_reset_handler_start)
 ENTRY(__tegra_cpu_reset_handler)
 
 #if DEBUG_CPU_RESET_HANDLER
-	mov32	r0, 0xC5ACCE55
-	mcr	p14, 0, r0, c7, c12, 6		@ Enable CoreSight access
 	b	.
 #endif
 #ifndef CONFIG_TRUSTED_FOUNDATIONS
@@ -340,6 +335,6 @@ __tegra_cpu_reset_handler_data:
 	.rept	TEGRA_RESET_DATA_SIZE
 	.long	0
 	.endr
-	.size	__tegra_cpu_reset_handler_data, .-tegra_cpu_reset_handler_data
+	.size	__tegra_cpu_reset_handler_data, . - __tegra_cpu_reset_handler_data
 	.align L1_CACHE_SHIFT
 ENTRY(__tegra_cpu_reset_handler_end)

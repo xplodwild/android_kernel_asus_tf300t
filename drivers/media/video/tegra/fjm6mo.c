@@ -79,6 +79,7 @@ static unsigned int preview_y = 0;
 static unsigned int version_num = 0xffffffff;
 static unsigned int register_value = 0xffffffff;
 static unsigned int shading_table = 0;
+static unsigned int cur_camera_id = 0;
 
 static u8 fw_chip_erase_pin1[16] = {
     0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x1f,
@@ -411,7 +412,22 @@ static int isp_cam_start()
         return -ENOMEM;
     }
     else{
-        fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x01, 0x24);
+        if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T){
+            printk("set_camera as 0x%X\n", cur_camera_id);
+            fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x3F, cur_camera_id);
+            err = isp_interrupt(INT_STATUS_MODE);
+            if(err){
+                pr_err("set_camera error");
+                return -ENOMEM;
+            }
+            fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x3E, 0x03);
+            if(cur_camera_id == 0)
+                fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x01, 0x24);
+            else
+                fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x01, 0x28);
+        }
+        else
+            fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x01, 0x24);
         return 0;
     }
 }
@@ -646,13 +662,47 @@ static int fw_checksum(u32* sum)
     return 0;
 }
 
+static int fw_crc_checksum(u32* sum)
+{
+    u32 start_rom_address = FLASH_ROM_ADDRESS;
+    u32 count = 0x001f8000;
+    u32 i = 0, j =0, times = 0, value;
+    u16 CRC = 0xFFFF;
+    u32 write_size = FJM6MO_SECTOR_SIZE_1k;
+    u8 rom[FJM6MO_SECTOR_SIZE_1k];
+
+    while(1){
+        fjm6mo_read_memory(info->i2c_client, start_rom_address, write_size, rom);
+        for(times = 0; times < write_size ; times += 2){
+            CRC = (unsigned char)(CRC >> 8) | (CRC << 8);
+            CRC ^= rom[times+1];
+            CRC ^= (unsigned char)(CRC & 0xff) >> 4;
+            CRC ^= (CRC << 8) << 4;
+            CRC ^= ((CRC & 0xff) << 4) << 1;
+
+            CRC = (unsigned char)(CRC >> 8) | (CRC << 8);
+            CRC ^= rom[times];
+            CRC ^= (unsigned char)(CRC & 0xff) >> 4;
+            CRC ^= (CRC << 8) << 4;
+            CRC ^= ((CRC & 0xff) << 4) << 1;
+        }
+        if((start_rom_address % FJM6MO_CHECKSUM_SIZE) == 0)
+            pr_info("CRC checksum:0x%x 0x%x\n", start_rom_address, CRC);
+        start_rom_address += write_size;
+        if(start_rom_address >= 0x101f8000)
+            break;
+    }
+    pr_info("CRC checksum:0x%x\n", CRC);
+
+}
+
 static char* get_fw_file_name()
 {
     char *pFile;
     if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
-        pFile = "/system/etc/firmware/camera/TF700T-RS_M6Mo.bin";
+        pFile = "/system/etc/firmware/camera/04-RS_M6Mo.bin";
     else if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201)
-        pFile = "/system/etc/firmware/camera/TF201-RS_M6Mo.bin";
+        pFile = "/system/etc/firmware/camera/00-RS_M6Mo.bin";
     else{
         pFile = "/system/etc/firmware/camera/Wrong_Project_File";
         pr_err("Wrong project name\n");
@@ -1282,9 +1332,19 @@ static int sensor_initial(struct sensor_info *info, u32 camera_id)
             if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T){
                 printk("set_camera as 0x%X\n", camera_id);
                 fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x3F, camera_id);
+                err = isp_interrupt(INT_STATUS_MODE);
+                if(err){
+                    pr_err("set_camera error");
+                    return -ENOMEM;
+                }
+                fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x3E, 0x03);
+                if(camera_id == 1){
+                    preview_x = 1920;
+                    preview_y = 1080;
+                    fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x01, 0x28);
+                }
             }
-            else{
-                //preview 1280x960
+            if(camera_id == 0){
                 preview_x = 1280;
                 preview_y = 960;
                 fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x01, 0x24);
@@ -1702,7 +1762,8 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
                             if(err)
                                 pr_err("Touch af stop interrupt error");
                         }
-                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
+                        if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201)
+                            fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
                     }
                 }
             }
@@ -1924,15 +1985,17 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
                     sizeof(shading))) {
                 return -EFAULT;
             }
-            if(sensor_get_status() != FJM6MO_PARA_STATUS_MON)
-                break;
-            sensor_change_status(E_M6MO_Status_Parameter);
-            printk("SET_SHADING as %d\n", shading);
-            if(shading)
-                fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x07, 0x1);
-            else
-                fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x07, 0x0);
-            sensor_change_status(E_M6MO_Status_Monitor);
+            fjm6mo_read_register(info->i2c_client, 0x01, 0x07, 0x01, &buffer);
+            if(shading != buffer && buffer != 0x2){
+                printk("SET_SHADING as %d\n", shading);
+                if(sensor_get_status() != E_M6MO_Status_Parameter)
+                    sensor_change_status(E_M6MO_Status_Parameter);
+                if(shading)
+                    fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x07, 0x1);
+                else
+                    fjm6mo_write_register(info->i2c_client, 1, 0x01, 0x07, 0x0);
+                sensor_change_status(E_M6MO_Status_Monitor);
+            }
             break;
         }
         case SENSOR_CUSTOM_IOCTL_SET_FACEDETECT:
@@ -2036,8 +2099,14 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             if(continuous_af){
                 caf_mode = true;
                 if(buffer != 0x4){
-                    fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x41, 0x4);
-                    fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x1);
+                    if(touch_mode != TOUCH_STATUS_OFF){
+                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x41, 0x6);
+                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x1);
+                    }
+                    else{
+                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x41, 0x4);
+                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x1);
+                    }
                 }
             }
             else{
@@ -2048,7 +2117,9 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
                     err = isp_interrupt(INT_STATUS_AF);
                     if(err)
                         pr_err("CAF stop error: no interrupt\n");
-                    fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
+                    if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201)
+                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
+                    msleep(30);
                     fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x41, 0x3);
                 }
             }
@@ -2470,7 +2541,8 @@ static int i2c_camera(struct file *file, char __user *buf, size_t count, loff_t 
         }
         case 3:
         {
-            pr_info("fjm6mo start and enter monitor mode\n");
+            pr_info("fjm6mo rear start and enter monitor mode\n");
+            cur_camera_id = 0;
             err = isp_cam_start();
             if(err)
                 return -ENOMEM;
@@ -2523,6 +2595,7 @@ static int i2c_camera(struct file *file, char __user *buf, size_t count, loff_t 
             if(err)
                 return -ENOMEM;
             pr_info("fjm6mo start\n");
+            cur_camera_id = 0;
             err = isp_cam_start();
             if(err)
                 return -ENOMEM;
@@ -2547,6 +2620,7 @@ static int i2c_camera(struct file *file, char __user *buf, size_t count, loff_t 
             if(err)
                 return -ENOMEM;
             pr_info("fjm6mo start\n");
+            cur_camera_id = 0;
             err = isp_cam_start();
             if(err)
                 return -ENOMEM;
@@ -2557,6 +2631,22 @@ static int i2c_camera(struct file *file, char __user *buf, size_t count, loff_t 
             err = isp_power_off();
             if(err)
                 return -ENOMEM;
+            break;
+        }
+        case 13:
+        {
+            pr_info("fjm6mo front start and enter monitor mode\n");
+            cur_camera_id = 1;
+            err = isp_cam_start();
+            if(err)
+                return -ENOMEM;
+            result = sensor_change_status(E_M6MO_Status_Monitor);
+            break;
+        }
+        case 14:
+        {
+            pr_info("m6mo crc checksum\n");
+            fw_crc_checksum(&temp);
             break;
         }
         default:
@@ -2673,6 +2763,31 @@ static int i2c_calibration_pgain(struct file *file, char __user *buf, size_t cou
     return len;    /* the end */
 }
 
+static int i2c_set_cur_camera_id(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+{
+    char *bp = debugTxtBuf;
+    int len, ret=-EINVAL;
+    unsigned int camera_id = cur_camera_id;
+
+    if (*ppos)
+        return 0;    /* the end */
+
+//+ parsing......
+    len=( count > DBG_TXT_BUF_SIZE-1 ) ? ( DBG_TXT_BUF_SIZE-1 ) : (count);
+    if ( copy_from_user( debugTxtBuf, buf, len ) )
+        return -EFAULT;
+
+    debugTxtBuf[len] = 0; //add string end
+
+    sscanf(debugTxtBuf, "%X", &camera_id);
+    pr_info("cur_camera_id = 0x%X, command is set_cur_camera_id = 0x%X\n", cur_camera_id, camera_id);
+    cur_camera_id = camera_id;
+
+    *ppos = len;
+
+    return len;    /* the end */
+}
+
 static int i2c_firmware_update_status(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
     int len = 0;
@@ -2737,6 +2852,7 @@ static int i2c_camera_ack(struct file *file, char __user *buf, size_t count, lof
     if(err)
         return -ENOMEM;
     msleep(10);
+    cur_camera_id = 0;
     err = isp_cam_start();
     if(err)
         return -ENOMEM;
@@ -2760,7 +2876,53 @@ static int i2c_camera_ack(struct file *file, char __user *buf, size_t count, lof
     if(err)
         return -ENOMEM;
 
-    len = snprintf(bp, DBG_TXT_BUF_SIZE, "the value is %d\n", fjm6mo_status);
+    len = snprintf(bp, DBG_TXT_BUF_SIZE, "%d\n", fjm6mo_status);
+
+    if (copy_to_user(buf, debugTxtBuf, len))
+        return -EFAULT;
+
+    *ppos += len;
+    return len;
+}
+
+static int i2c_vga_camera_ack(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+{
+    int len = 0, retry = 0, err;
+    char *bp = debugTxtBuf;
+    u32 temp, result;
+
+    if (*ppos)
+        return 0;    /* the end */
+
+    err = isp_power_on();
+    if(err)
+        return -ENOMEM;
+    msleep(10);
+    cur_camera_id = 1;
+    err = isp_cam_start();
+    if(err)
+        return -ENOMEM;
+    //Go to the monitor mode
+    fjm6mo_write_register(info->i2c_client, 1, 0x00, 0x10, 0xff);
+    fjm6mo_write_register(info->i2c_client, 1, 0x00, 0x0B, 0x2);
+    //Wait interrupt
+    err = isp_interrupt(INT_STATUS_MODE);
+    if(err)
+        pr_info("Enter monitor mode fail\n");
+    //read sensor data
+    result = fjm6mo_write_register(info->i2c_client, 1, 0x0D, 0x34, 0x30);
+    result = fjm6mo_write_register(info->i2c_client, 1, 0x0D, 0x35, 0x0A);
+    result = fjm6mo_write_register(info->i2c_client, 1, 0x0D, 0x33, 0x01);
+    result = fjm6mo_read_register(info->i2c_client, 0x0D, 0x36, 0x01, &temp);
+    if(temp == 0x27)
+        fjm6mo_status = 1;
+    else
+        fjm6mo_status = 0;
+    err = isp_power_off();
+    if(err)
+        return -ENOMEM;
+
+    len = snprintf(bp, DBG_TXT_BUF_SIZE, "%d\n", fjm6mo_status);
 
     if (copy_to_user(buf, debugTxtBuf, len))
         return -EFAULT;
@@ -2989,9 +3151,17 @@ static const struct file_operations isp_firmware_version = {
     .open = i2c_set_open,
     .read = i2c_firmware_version,
 };
+static const struct file_operations isp_set_cur_camera_id = {
+    .open = i2c_set_open,
+    .write = i2c_set_cur_camera_id,
+};
 static const struct file_operations camera_status = {
     .open = i2c_set_open,
     .read = i2c_camera_ack,
+};
+static const struct file_operations vga_status = {
+    .open = i2c_set_open,
+    .read = i2c_vga_camera_ack,
 };
 static const struct file_operations calibration_status = {
     .open = i2c_set_open,
@@ -3025,9 +3195,9 @@ static const struct file_operations i2c_write_memory = {
 static int __init tegra_i2c_debuginit(void)
 {
     struct dentry *dent = debugfs_create_dir("fjm6mo", NULL);
-    (void) debugfs_create_file("i2c_open_camera", 0700,
-            dent, NULL, &i2c_open_camera);
     if(factory_mode == 2){
+        (void) debugfs_create_file("i2c_open_camera", 0777,
+                dent, NULL, &i2c_open_camera);
         (void) debugfs_create_file("isp_calibration_shading", 0777,
             dent, NULL, &isp_calibration_shading);
         (void) debugfs_create_file("isp_calibration_pgain", 0777,
@@ -3040,8 +3210,12 @@ static int __init tegra_i2c_debuginit(void)
                 dent, NULL, &isp_firmware_update_status);
         (void) debugfs_create_file("isp_firmware_version", 0777,
                 dent, NULL, &isp_firmware_version);
+        (void) debugfs_create_file("isp_set_cur_camera_id", 0777,
+                dent, NULL, &isp_set_cur_camera_id);
         (void) debugfs_create_file("camera_status", 0777,
                 dent, NULL, &camera_status);
+        (void) debugfs_create_file("vga_status", 0777,
+                dent, NULL, &vga_status);
         (void) debugfs_create_file("read_register_value", 0777,
                 dent, NULL, &read_register_value);
         (void) debugfs_create_file("i2c_read_register", 0777,
@@ -3054,6 +3228,8 @@ static int __init tegra_i2c_debuginit(void)
                 dent, NULL, &i2c_write_memory);
     }
     else{
+        (void) debugfs_create_file("i2c_open_camera", 0700,
+                dent, NULL, &i2c_open_camera);
         (void) debugfs_create_file("isp_calibration_shading", 0700,
             dent, NULL, &isp_calibration_shading);
         (void) debugfs_create_file("isp_calibration_pgain", 0700,
@@ -3066,8 +3242,12 @@ static int __init tegra_i2c_debuginit(void)
                 dent, NULL, &isp_firmware_update_status);
         (void) debugfs_create_file("isp_firmware_version", 0700,
                 dent, NULL, &isp_firmware_version);
+        (void) debugfs_create_file("isp_set_cur_camera_id", 0700,
+                dent, NULL, &isp_set_cur_camera_id);
         (void) debugfs_create_file("camera_status", 0700,
                 dent, NULL, &camera_status);
+        (void) debugfs_create_file("vga_status", 0700,
+                dent, NULL, &vga_status);
         (void) debugfs_create_file("read_register_value", 0700,
                 dent, NULL, &read_register_value);
         (void) debugfs_create_file("i2c_read_register", 0700,

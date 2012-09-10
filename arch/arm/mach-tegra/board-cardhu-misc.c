@@ -32,16 +32,15 @@ static struct kobj_attribute module##_attr = { \
 	.show = module##_show, \
 }
 
-//Chip unique ID is a maximum of 17 characters including NULL termination.
-unsigned char cardhu_chipid[17];
-EXPORT_SYMBOL(cardhu_chipid);
-
-//PCBID is composed of nine GPIO pins predefined by HW schematic of Tegra3-series
+/*
+ *PCBID is composed of nine GPIO pins predefined by
+ *HW schematic of Tegra3-series
+ */
 unsigned int cardhu_pcbid;
 
 static const char *tegra3_project_name[TEGRA3_PROJECT_MAX] = {
 	[TEGRA3_PROJECT_TF201] = "TF201",
-	[TEGRA3_PROJECT_ME370T] = "ME370T",
+	[TEGRA3_PROJECT_P1801] = "P1801",
 	[TEGRA3_PROJECT_TF300T] = "TF300T",
 	[TEGRA3_PROJECT_TF300TG] = "TF300TG",
 	[TEGRA3_PROJECT_TF700T] = "TF700T",
@@ -57,16 +56,18 @@ static int __init tegra3_productid_setup(char *id)
 {
 	unsigned int index;
 
-	if (!id) return 0;
+	if (!id) return 1;
 
 	index = (unsigned int) simple_strtoul(id, NULL, 0);
 
+	pr_info("[MISC]: Found androidboot.productid = %s\n", id);
+
 	tegra3_project_name_index = (index < TEGRA3_PROJECT_MAX)
 					? index : TEGRA3_PROJECT_INVALID;
-	return 1;
+	return 0;
 }
 
-__setup("androidboot.productid=", tegra3_productid_setup);
+early_param("androidboot.productid", tegra3_productid_setup);
 
 /* Deprecated function */
 const char *tegra3_get_project_name(void)
@@ -131,8 +132,17 @@ unsigned int tegra3_query_touch_module_pcbid(void)
 	touch_pcbid = (HW_DRF_VAL(TEGRA3_DEVKIT, MISC_HW, TOUCHL, cardhu_pcbid)) +
 		(HW_DRF_VAL(TEGRA3_DEVKIT, MISC_HW, TOUCHH, cardhu_pcbid) << 1);
 
-	if ((project == TEGRA3_PROJECT_TF201) || (project == TEGRA3_PROJECT_TF700T))
+	switch (project) {
+	case TEGRA3_PROJECT_TF201:
 		ret = touch_pcbid;
+		break;
+	case TEGRA3_PROJECT_TF700T:
+		/* Reserve PCB_ID[2] for touch panel identification */
+		ret = touch_pcbid & 0x1;
+		break;
+	default:
+		ret = -1;
+	}
 
 	return ret;
 }
@@ -164,6 +174,24 @@ unsigned int tegra3_query_audio_codec_pcbid(void)
 }
 EXPORT_SYMBOL(tegra3_query_audio_codec_pcbid);
 
+unsigned int tegra3_query_pcba_revision_pcbid(void)
+{
+	unsigned int project = tegra3_get_project_id();
+	unsigned int ret = -1;
+
+	/* Check if running target platform */
+	if (project != TEGRA3_PROJECT_TF700T) {
+		pr_err("[MISC]: %s is not supported on %s.\n", __func__,
+			tegra3_get_project_name());
+		return ret;
+	}
+
+	ret = HW_DRF_VAL(TEGRA3_DEVKIT, MISC_HW, REVISION, cardhu_pcbid);
+
+	return ret;
+}
+EXPORT_SYMBOL(tegra3_query_pcba_revision_pcbid);
+
 unsigned int tegra3_query_wifi_module_pcbid(void)
 {
 	unsigned int wifi_pcbid = 0;
@@ -189,55 +217,7 @@ static ssize_t cardhu_chipid_show(struct kobject *kobj,
 {
 	char *s = buf;
 
-	s += sprintf(s, "%s\n", cardhu_chipid);
-	return (s - buf);
-}
-
-#define FUSE_FAB_CODE		0x204
-#define FUSE_FAB_CODE_MASK	0x3f
-#define FUSE_LOT_CODE_1		0x20c
-static ssize_t cardhu_backup_chipid_show(struct kobject *kobj,
-	struct kobj_attribute *attr, char *buf)
-{
-	char *s = buf;
-	unsigned long reg;
-	unsigned long fab;
-	unsigned long lot;
-	unsigned long i;
-	unsigned long backup_uid;
-	char backup_id[9];
-
-	/* fab code */
-	fab = tegra_fuse_readl(FUSE_FAB_CODE) & FUSE_FAB_CODE_MASK;
-
-	/* Lot code must be re-encoded from a 5 digit base-36 'BCD' number
-	 * to a binary number.
-	 */
-	lot = 0;
-	reg = tegra_fuse_readl(FUSE_LOT_CODE_1) << 2;
-
-	for (i = 0; i < 5; ++i) {
-		u32 digit = (reg & 0xFC000000) >> 26;
-		BUG_ON(digit >= 36);
-		lot *= 36;
-		lot += digit;
-		reg <<= 6;
-	}
-
-	backup_uid = 0;
-	/* compose 32-bit backup id by concatenating two bit fields.
-	 *   <FAB:6><LOT:26>
-	 */
-	backup_uid = ((unsigned long) fab << 26ul) | ((unsigned long) lot);
-	snprintf(backup_id, sizeof(backup_id), "%08lx", backup_uid);
-
-	strcpy(buf, cardhu_chipid);
-
-	/* replace 64-bit unique id starting bit#24 with 32-bit backup id */
-	for (i = 0; i < strlen(backup_id); i++)
-		buf[i + 2] = backup_id[i];
-
-	s += sprintf(s, "%s\n", buf);
+	s += sprintf(s, "%016llx\n", tegra_chip_uid());
 	return (s - buf);
 }
 
@@ -272,51 +252,16 @@ static ssize_t cardhu_projectname_show(struct kobject *kobj,
         return (s - buf);
 }
 
-static DEFINE_MUTEX(vibrator_lock);
-
-static ssize_t cardhu_vibctl_store(struct kobject *kobj,
-	struct kobj_attribute *attr, char *buf, size_t count)
-{
-	int ret = count;
-	mutex_lock(&vibrator_lock);
-
-	// ignore case
-	if (!strncasecmp(buf, "ON", strlen("ON"))) {
-		pr_info("[MISC]: turn on vibrator.\n");
-		gpio_set_value(TEGRA_GPIO_PH7, 1);
-	} else if (!strncasecmp(buf, "OFF", strlen("OFF"))) {
-		pr_info("[MISC]: turn off vibrator.\n");
-		gpio_set_value(TEGRA_GPIO_PH7, 0);
-	} else {
-		pr_err("[MISC]: undefined for vibrator control.\n");
-		ret = 0;
-	}
-
-	mutex_unlock(&vibrator_lock);
-	return ret;
-}
-
 CARDHU_MISC_ATTR(cardhu_chipid);
-CARDHU_MISC_ATTR(cardhu_backup_chipid);
 CARDHU_MISC_ATTR(cardhu_pcbid);
 CARDHU_MISC_ATTR(cardhu_projectid);
 CARDHU_MISC_ATTR(cardhu_projectname);
 
-static struct kobj_attribute cardhu_vibctl_attr = {
-        .attr = {
-                .name = __stringify(cardhu_vibctl),
-                .mode = 0220,
-        },
-        .store = cardhu_vibctl_store,
-};
-
 static struct attribute *attr_list[] = {
 	&cardhu_chipid_attr.attr,
-	&cardhu_backup_chipid_attr.attr,
 	&cardhu_pcbid_attr.attr,
 	&cardhu_projectid_attr.attr,
 	&cardhu_projectname_attr.attr,
-	&cardhu_vibctl_attr.attr,
 	NULL,
 };
 
@@ -419,16 +364,6 @@ static int pcbid_init(void)
 		gpio_free(TEGRA_GPIO_PK3);
 		return ret;
         }
-
-	tegra_gpio_enable(TEGRA_GPIO_PR4);
-	tegra_gpio_enable(TEGRA_GPIO_PR5);
-	tegra_gpio_enable(TEGRA_GPIO_PQ4);
-	tegra_gpio_enable(TEGRA_GPIO_PQ7);
-	tegra_gpio_enable(TEGRA_GPIO_PR2);
-	tegra_gpio_enable(TEGRA_GPIO_PQ5);
-	tegra_gpio_enable(TEGRA_GPIO_PJ0);
-	tegra_gpio_enable(TEGRA_GPIO_PJ2);
-	tegra_gpio_enable(TEGRA_GPIO_PK3);
 
 	gpio_direction_input(TEGRA_GPIO_PR4);
 	gpio_direction_input(TEGRA_GPIO_PR5);

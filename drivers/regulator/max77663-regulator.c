@@ -2,8 +2,8 @@
  * drivers/regulator/max77663-regulator.c
  * Maxim LDO and Buck regulators driver
  *
- * Copyright 2011 Maxim Integrated Products, Inc.
- * Copyright (C) 2011 NVIDIA Corporation
+ * Copyright 2011-2012 Maxim Integrated Products, Inc.
+ * Copyright (C) 2011-2012 NVIDIA Corporation
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -29,7 +29,8 @@
 
 /* Regulator types */
 #define REGULATOR_TYPE_SD		0
-#define REGULATOR_TYPE_LDO		1
+#define REGULATOR_TYPE_LDO_N		1
+#define REGULATOR_TYPE_LDO_P		2
 
 /* SD and LDO Registers */
 #define MAX77663_REG_SD0		0x16
@@ -64,6 +65,7 @@
 #define MAX77663_REG_LDO7_CFG2		0x32
 #define MAX77663_REG_LDO8_CFG		0x33
 #define MAX77663_REG_LDO8_CFG2		0x34
+#define MAX77663_REG_LDO_CFG3		0x35
 
 /* Power Mode */
 #define POWER_MODE_NORMAL		3
@@ -90,6 +92,10 @@
 /* SD Failling slew rate Active-Discharge Mode */
 #define SD_FSRADE_MASK			0x01
 #define SD_FSRADE_SHIFT		0
+
+/* LDO Configuration 3 */
+#define TRACK4_MASK			0x20
+#define TRACK4_SHIFT			5
 
 /* Voltage */
 #define SDX_VOLT_MASK			0xFF
@@ -274,7 +280,7 @@ static int max77663_regulator_set_fps(struct max77663_regulator *reg)
 		fps_mask |= FPS_PD_PERIOD_MASK;
 	}
 
-	if (fps_val)
+	if (fps_val || fps_mask)
 		ret = max77663_regulator_cache_write(reg,
 					reg->regs[FPS_REG].addr, fps_mask,
 					fps_val, &reg->regs[FPS_REG].val);
@@ -448,7 +454,8 @@ static int max77663_regulator_enable(struct regulator_dev *rdev)
 {
 	struct max77663_regulator *reg = rdev_get_drvdata(rdev);
 	struct max77663_regulator_platform_data *pdata = _to_pdata(reg);
-	int power_mode = POWER_MODE_NORMAL;
+	int power_mode = (pdata->flags & GLPM_ENABLE) ?
+			 POWER_MODE_GLPM : POWER_MODE_NORMAL;
 
 	if (reg->fps_src != FPS_SRC_NONE) {
 		dev_dbg(&rdev->dev, "enable: Regulator %s using %s\n",
@@ -464,7 +471,9 @@ static int max77663_regulator_enable(struct regulator_dev *rdev)
 		return 0;
 	}
 
-	if (reg->regulator_mode == REGULATOR_MODE_STANDBY)
+	/* N-Channel LDOs don't support Low-Power mode. */
+	if ((reg->type != REGULATOR_TYPE_LDO_N) &&
+			(reg->regulator_mode == REGULATOR_MODE_STANDBY))
 		power_mode = POWER_MODE_LPM;
 
 	return max77663_regulator_set_power_mode(reg, power_mode);
@@ -523,14 +532,18 @@ static int max77663_regulator_set_mode(struct regulator_dev *rdev,
 				       unsigned int mode)
 {
 	struct max77663_regulator *reg = rdev_get_drvdata(rdev);
+	struct max77663_regulator_platform_data *pdata = _to_pdata(reg);
 	u8 power_mode;
 	int ret;
 
 	if (mode == REGULATOR_MODE_NORMAL)
-		power_mode = POWER_MODE_NORMAL;
-	else if (mode == REGULATOR_MODE_STANDBY)
-		power_mode = POWER_MODE_LPM;
-	else
+		power_mode = (pdata->flags & GLPM_ENABLE) ?
+			     POWER_MODE_GLPM : POWER_MODE_NORMAL;
+	else if (mode == REGULATOR_MODE_STANDBY) {
+		/* N-Channel LDOs don't support Low-Power mode. */
+		power_mode = (reg->type != REGULATOR_TYPE_LDO_N) ?
+			     POWER_MODE_LPM : POWER_MODE_NORMAL;
+	} else
 		return -EINVAL;
 
 	ret = max77663_regulator_set_power_mode(reg, power_mode);
@@ -614,12 +627,19 @@ static int max77663_regulator_preinit(struct max77663_regulator *reg)
 		return ret;
 	}
 
+	/* N-Channel LDOs don't support Low-Power mode. */
+	if ((reg->type == REGULATOR_TYPE_LDO_N) &&
+			(pdata->flags & GLPM_ENABLE))
+		pdata->flags &= ~GLPM_ENABLE;
+
 	/* To prevent power rail turn-off when change FPS source,
 	 * it must set power mode to NORMAL before change FPS source to NONE
 	 * from SRC_0, SRC_1 and SRC_2. */
 	if ((reg->fps_src != FPS_SRC_NONE) && (pdata->fps_src == FPS_SRC_NONE)
 			&& (reg->power_mode != POWER_MODE_NORMAL)) {
-		ret = max77663_regulator_set_power_mode(reg, POWER_MODE_NORMAL);
+		val = (pdata->flags & GLPM_ENABLE) ?
+		      POWER_MODE_GLPM : POWER_MODE_NORMAL;
+		ret = max77663_regulator_set_power_mode(reg, val);
 		if (ret < 0) {
 			dev_err(reg->dev, "preinit: Failed to "
 				"set power mode to POWER_MODE_NORMAL\n");
@@ -655,7 +675,8 @@ static int max77663_regulator_preinit(struct max77663_regulator *reg)
 	}
 
 	if (pdata->init_enable)
-		val = POWER_MODE_NORMAL;
+		val = (pdata->flags & GLPM_ENABLE) ?
+		      POWER_MODE_GLPM : POWER_MODE_NORMAL;
 	else
 		val = POWER_MODE_DISABLE;
 
@@ -683,15 +704,13 @@ skip_init_apply:
 				val |= (SD_SR_100 << SD_SR_SHIFT);
 		}
 
-		if (pdata->flags & SD_FORCED_PWM_MODE) {
-			mask |= SD_FPWM_MASK;
+		mask |= SD_FPWM_MASK;
+		if (pdata->flags & SD_FORCED_PWM_MODE)
 			val |= SD_FPWM_MASK;
-		}
 
-		if (pdata->flags & SD_FSRADE_DISABLE) {
-			mask |= SD_FSRADE_MASK;
+		mask |= SD_FSRADE_MASK;
+		if (pdata->flags & SD_FSRADE_DISABLE)
 			val |= SD_FSRADE_MASK;
-		}
 
 		ret = max77663_regulator_cache_write(reg,
 				reg->regs[CFG_REG].addr, mask, val,
@@ -724,6 +743,18 @@ skip_init_apply:
 		}
 	}
 
+	if ((reg->id == MAX77663_REGULATOR_ID_LDO4)
+			&& (pdata->flags & LDO4_EN_TRACKING)) {
+		val = TRACK4_MASK;
+		ret = max77663_write(parent, MAX77663_REG_LDO_CFG3, &val, 1, 0);
+		if (ret < 0) {
+			dev_err(reg->dev, "preinit: "
+				"Failed to set register 0x%x\n",
+				MAX77663_REG_LDO_CFG3);
+			return ret;
+		}
+	}
+
 	return 0;
 }
 
@@ -752,10 +783,10 @@ skip_init_apply:
 		.power_mode_shift = SD_POWER_MODE_SHIFT,	\
 	}
 
-#define REGULATOR_LDO(_id, _min_uV, _max_uV, _step_uV)		\
+#define REGULATOR_LDO(_id, _type, _min_uV, _max_uV, _step_uV)	\
 	[MAX77663_REGULATOR_ID_##_id] = {			\
 		.id = MAX77663_REGULATOR_ID_##_id,		\
-		.type = REGULATOR_TYPE_LDO,			\
+		.type = REGULATOR_TYPE_LDO_##_type,		\
 		.volt_mask = LDO_VOLT_MASK,			\
 		.regs = {					\
 			[VOLT_REG] = {				\
@@ -786,15 +817,15 @@ static struct max77663_regulator max77663_regs[MAX77663_REGULATOR_ID_NR] = {
 	REGULATOR_SD(SD3,    SDX, SD3,  600000, 3387500, 12500),
 	REGULATOR_SD(SD4,    SDX, SD4,  600000, 3387500, 12500),
 
-	REGULATOR_LDO(LDO0, 800000, 2350000, 25000),
-	REGULATOR_LDO(LDO1, 800000, 2350000, 25000),
-	REGULATOR_LDO(LDO2, 800000, 3950000, 50000),
-	REGULATOR_LDO(LDO3, 800000, 3950000, 50000),
-	REGULATOR_LDO(LDO4, 800000, 1587500, 12500),
-	REGULATOR_LDO(LDO5, 800000, 3950000, 50000),
-	REGULATOR_LDO(LDO6, 800000, 3950000, 50000),
-	REGULATOR_LDO(LDO7, 800000, 3950000, 50000),
-	REGULATOR_LDO(LDO8, 800000, 3950000, 50000),
+	REGULATOR_LDO(LDO0, N, 800000, 2350000, 25000),
+	REGULATOR_LDO(LDO1, N, 800000, 2350000, 25000),
+	REGULATOR_LDO(LDO2, P, 800000, 3950000, 50000),
+	REGULATOR_LDO(LDO3, P, 800000, 3950000, 50000),
+	REGULATOR_LDO(LDO4, P, 800000, 1587500, 12500),
+	REGULATOR_LDO(LDO5, P, 800000, 3950000, 50000),
+	REGULATOR_LDO(LDO6, P, 800000, 3950000, 50000),
+	REGULATOR_LDO(LDO7, N, 800000, 3950000, 50000),
+	REGULATOR_LDO(LDO8, N, 800000, 3950000, 50000),
 };
 
 #define REGULATOR_DESC(_id, _name)			\
@@ -839,7 +870,7 @@ static int max77663_regulator_probe(struct platform_device *pdev)
 	rdesc = &max77663_rdesc[pdev->id];
 	reg = &max77663_regs[pdev->id];
 	reg->dev = &pdev->dev;
-	reg->pdata = mfd_get_data(pdev);
+	reg->pdata = dev_get_platdata(&pdev->dev);
 
 	dev_dbg(&pdev->dev, "probe: name=%s\n", rdesc->name);
 

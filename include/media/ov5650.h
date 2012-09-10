@@ -29,8 +29,10 @@
 #define OV5650_IOCTL_GET_STATUS			_IOR('o', 5, __u8)
 #define OV5650_IOCTL_SET_BINNING    	_IOW('o', 6, __u8)
 #define OV5650_IOCTL_TEST_PATTERN		_IOW('o', 7, enum ov5650_test_pattern)
+#define OV5650_IOCTL_SET_GROUP_HOLD	    _IOW('o', 8, struct ov5650_ae)
 #define OV5650_IOCTL_SET_CAMERA_MODE	_IOW('o', 10, __u32)
 #define OV5650_IOCTL_SYNC_SENSORS		_IOW('o', 11, __u32)
+#define OV5650_IOCTL_GET_SENSORDATA		_IOR('o', 12, struct ov5650_sensordata)
 
 /* OV5650 registers */
 #define OV5650_SRM_GRUP_ACCESS          (0x3212)
@@ -63,12 +65,26 @@ enum ov5650_test_pattern {
 	TEST_PATTERN_CHECKERBOARD
 };
 
+struct ov5650_sensordata {
+    __u32 fuse_id_size;
+	__u8 fuse_id[16];
+};
+
 struct ov5650_mode {
 	int xres;
 	int yres;
 	__u32 frame_length;
 	__u32 coarse_time;
 	__u16 gain;
+};
+
+struct ov5650_ae {
+	__u32 frame_length;
+	__u8 frame_length_enable;
+	__u32 coarse_time;
+	__u8 coarse_time_enable;
+	__s32 gain;
+	__u8 gain_enable;
 };
 
 #ifdef __KERNEL__

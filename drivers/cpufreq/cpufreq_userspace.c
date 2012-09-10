@@ -38,9 +38,6 @@ static DEFINE_PER_CPU(struct cpufreq_policy *, temp_policy);
 static DEFINE_MUTEX(userspace_mutex);
 static int cpus_using_userspace_governor;
 
-#define dprintk(msg...) \
-	cpufreq_debug_printk(CPUFREQ_DEBUG_GOVERNOR, "userspace", msg)
-
 /* keep track of frequency transitions */
 static int
 userspace_cpufreq_notifier(struct notifier_block *nb, unsigned long val,
@@ -51,7 +48,7 @@ userspace_cpufreq_notifier(struct notifier_block *nb, unsigned long val,
 	if (!per_cpu(cpu_is_managed, freq->cpu))
 		return 0;
 
-	dprintk("saving cpu_cur_freq of cpu %u to be %u kHz\n",
+	pr_debug("saving cpu_cur_freq of cpu %u to be %u kHz\n",
 			freq->cpu, freq->new);
 	per_cpu(cpu_cur_freq, freq->cpu) = freq->new;
 
@@ -221,7 +218,7 @@ static int cpufreq_set(struct cpufreq_policy *policy, unsigned int freq)
 	printk("cpufreq_set for cpu %u, freq %u kHz\n", policy->cpu, freq);
 
 	if(!stress_test_enable)
-		mutex_lock(&userspace_mutex);
+	mutex_lock(&userspace_mutex);
 
 	if (!per_cpu(cpu_is_managed, policy->cpu))
 		goto err;
@@ -247,7 +244,7 @@ static int cpufreq_set(struct cpufreq_policy *policy, unsigned int freq)
 
  err:
 	if(!stress_test_enable)
-		mutex_unlock(&userspace_mutex);
+	mutex_unlock(&userspace_mutex);
 
 	return ret;
 }
@@ -284,7 +281,7 @@ static int cpufreq_governor_userspace(struct cpufreq_policy *policy,
 		per_cpu(cpu_max_freq, cpu) = policy->max;
 		per_cpu(cpu_cur_freq, cpu) = policy->cur;
 		per_cpu(cpu_set_freq, cpu) = policy->cur;
-		dprintk("managing cpu %u started "
+		pr_debug("managing cpu %u started "
 			"(%u - %u kHz, currently %u kHz)\n",
 				cpu,
 				per_cpu(cpu_min_freq, cpu),
@@ -306,13 +303,13 @@ static int cpufreq_governor_userspace(struct cpufreq_policy *policy,
 		per_cpu(cpu_min_freq, cpu) = 0;
 		per_cpu(cpu_max_freq, cpu) = 0;
 		per_cpu(cpu_set_freq, cpu) = 0;
-		 per_cpu(temp_policy, cpu) =NULL;
-		dprintk("managing cpu %u stopped\n", cpu);
+                per_cpu(temp_policy, cpu) =NULL;
+		pr_debug("managing cpu %u stopped\n", cpu);
 		mutex_unlock(&userspace_mutex);
 		break;
 	case CPUFREQ_GOV_LIMITS:
 		mutex_lock(&userspace_mutex);
-		dprintk("limit event for cpu %u: %u - %u kHz, "
+		pr_debug("limit event for cpu %u: %u - %u kHz, "
 			"currently %u kHz, last set to %u kHz\n",
 			cpu, policy->min, policy->max,
 			per_cpu(cpu_cur_freq, cpu),

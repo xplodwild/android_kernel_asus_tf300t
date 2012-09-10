@@ -55,6 +55,8 @@ struct pwm_bl_data {
 	unsigned int		lth_brightness;
 	int			(*notify)(struct device *,
 					  int brightness);
+	void			(*notify_after)(struct device *,
+					int brightness);
 	int			(*check_fb)(struct device *, struct fb_info *);
 };
 
@@ -95,63 +97,63 @@ static int display_write_reg(struct i2c_client *client, u16 addr, u16 val)
 static int display_write_table(struct i2c_client *client,
                                                                   const struct display_reg table[])
 {
-               int err;
-               const struct display_reg *next;
-               u16 val;
-               int command_count=0;
+        int err;
+        const struct display_reg *next;
+        u16 val;
+        int command_count=0;
 
-               pr_info("DISPLAY_write_table %s\n",__func__);
-               for (next = table; next->addr != DISPLAY_TABLE_END; next++) {
-                               if (next->addr == DISPLAY_WAIT_MS) {
-                                               msleep(next->val);
-                                               continue;
-                               }
+        pr_info("DISPLAY_write_table %s\n",__func__);
+        for (next = table; next->addr != DISPLAY_TABLE_END; next++) {
+                if (next->addr == DISPLAY_WAIT_MS) {
+                        msleep(next->val);
+                        continue;
+                }
 
-                               val = next->val;
+                val = next->val;
 
-                               err = display_write_reg(client, next->addr, val);
-                               if (err)
-                                               return err;
-               }
-               return 0;
+                err = display_write_reg(client, next->addr, val);
+                if (err)
+                        return err;
+        }
+        return 0;
 }
 
 static int display_read_reg(struct i2c_client *client, u16 addr, u16 *val)
 {
-               int err;
-               struct i2c_msg msg[2];
-               unsigned char data[4];
+        int err;
+        struct i2c_msg msg[2];
+        unsigned char data[4];
 
-               if (!client->adapter)
-                               return -ENODEV;
+        if (!client->adapter)
+                return -ENODEV;
 
-               msg[0].addr = 0x07;
-               msg[0].flags = 0;
-               msg[0].len = 2;
-               msg[0].buf = data;
+        msg[0].addr = 0x07;
+        msg[0].flags = 0;
+        msg[0].len = 2;
+        msg[0].buf = data;
 
-               /* high byte goes out first */
-               data[0] = (u8) (addr >> 8);
-               data[1] = (u8) (addr & 0xff);
+        /* high byte goes out first */
+        data[0] = (u8) (addr >> 8);
+        data[1] = (u8) (addr & 0xff);
 
-               msg[1].addr = 0x07;
-               msg[1].flags = 1;
+        msg[1].addr = 0x07;
+        msg[1].flags = 1;
 
-               msg[1].len = 2;
-               msg[1].buf = data + 2;
+        msg[1].len = 2;
+        msg[1].buf = data + 2;
 
-               err = i2c_transfer(client->adapter, msg, 2);
+        err = i2c_transfer(client->adapter, msg, 2);
 
-               printk("Check register high=%x \n",data[2]);
-               printk("Check register low=%x \n",data[3]);
+        printk("Check register high=%x \n",data[2]);
+        printk("Check register low=%x \n",data[3]);
 
-               if (err != 2)
-                               return -EINVAL;
-                               /*
-                                               memcpy(val, data+2, 1);
-                                               *val=*val&0xff;
-                               */
-               return 0;
+        if (err != 2)
+                return -EINVAL;
+        /*
+                memcpy(val, data+2, 1);
+                *val=*val&0xff;
+        */
+        return 0;
 }
 
 static int display_read_table(struct i2c_client *client,
@@ -184,7 +186,7 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 	struct pwm_bl_data *pb = dev_get_drvdata(&bl->dev);
 	int brightness = bl->props.brightness;
 	int max = bl->props.max_brightness;
-	static int bl_enable_sleep_control = 0;	// sleep only when suspend or resume
+      static int bl_enable_sleep_control = 0; // sleep only when suspend or resume
 
 	if (bl->props.power != FB_BLANK_UNBLANK)
 		brightness = 0;
@@ -202,6 +204,7 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 		}
 		pwm_config(pb->pwm, 0, pb->period);
 		pwm_disable(pb->pwm);
+		I2C_command_flag=0;
 	} else {
 		if(tegra_dcs[0])
 			sd_brightness = *(tegra_dcs[0]->out->sd_settings->sd_brightness);
@@ -219,13 +222,13 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 			struct display_reg display_table[71] =
 			{
 				{0x0002, 0x0001}, //SYSctl, S/W Reset
-				{DISPLAY_WAIT_MS, 0x0A},
+				{DISPLAY_WAIT_MS, 0x05},
 				{0x0002, 0x0000}, //SYSctl, S/W Reset release
 				//{0x0010, 0xFFFD}, //GPIO1
 				//{0x0014, 0x0002},
 				{0x0016, 0x309F}, //PLL Control Register 0 (PLL_PRD,PLL_FBD)
 				{0x0018, 0x0203}, //PLL_FRS,PLL_LBWS, PLL oscillation enable
-				{DISPLAY_WAIT_MS, 0x03E8},
+				{DISPLAY_WAIT_MS, 0x05},
 				{0x0018, 0x0213}, //PLL_FRS,PLL_LBWS, PLL clock out enable
 				{0x0006, 0x012C}, //FIFO Control Register
 				{0x0008, 0x0037}, //DSI-TX Format setting
@@ -254,11 +257,11 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 				{0x0212, 0x0000},
 				{0x0214, 0x0005}, //LPTXTIMECNT
 				{0x0216, 0x0000},
-				{0x0218, 0x2301}, //TCLK_HEADERCNT
+				{0x0218, 0x2801}, //TCLK_HEADERCNT
 				{0x021A, 0x0000},
 				{0x021C, 0x0000}, //TCLK_TRAILCNT
 				{0x021E, 0x0000},
-				{0x0220, 0x0806}, //THS_HEADERCNT
+				{0x0220, 0x0C06}, //THS_HEADERCNT
 				{0x0222, 0x0000},
 				{0x0224, 0x4E20}, //TWAKEUPCNT
 				{0x0226, 0x0000},
@@ -336,6 +339,15 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 				printk("Check start to read register\n");
 				//err = display_read_table(client_panel, display_table);
 				//mdelay(1000);
+
+				if (gpio_get_value(TEGRA_GPIO_PI6)==0){	//panel is panasonic
+					printk("Panel is panasonic");
+					mdelay(35);
+				}
+				else{								//panel is hydis
+					printk("Panel is hydis");
+					mdelay(70);
+				}
 			}
 		}
 
@@ -352,6 +364,9 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 
 		gpio_set_value(cardhu_bl_enb, !!brightness);
 	}
+
+	if (pb->notify_after)
+		pb->notify_after(pb->dev, brightness);
 
 	return 0;
 }
@@ -403,6 +418,7 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 
 	pb->period = data->pwm_period_ns;
 	pb->notify = data->notify;
+	pb->notify_after = data->notify_after;
 	pb->check_fb = data->check_fb;
 	pb->lth_brightness = data->lth_brightness *
 		(data->pwm_period_ns / data->max_brightness);
@@ -470,6 +486,8 @@ static int pwm_backlight_suspend(struct platform_device *pdev,
 		pb->notify(pb->dev, 0);
 	pwm_config(pb->pwm, 0, pb->period);
 	pwm_disable(pb->pwm);
+	if (pb->notify_after)
+		pb->notify_after(pb->dev, 0);
 	return 0;
 }
 

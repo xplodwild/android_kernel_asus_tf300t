@@ -3,7 +3,7 @@
  *
  * RTC driver for TI TPS6591x
  *
- * Copyright (c) 2011, NVIDIA Corporation.
+ * Copyright (c) 2011-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -111,16 +111,8 @@ static int tps6591x_rtc_valid_tm(struct rtc_time *tm)
 		|| tm->tm_mday > rtc_month_days(tm->tm_mon, tm->tm_year + OS_REF_YEAR)
 		|| tm->tm_hour >= 24
 		|| tm->tm_min >= 60
-		|| tm->tm_sec >= 60){
-		printk("tps6591x_rtc_valid_tm: rtc time not valid %u %u %u %u %u %u\n",tm->tm_year >= (RTC_YEAR_OFFSET + 99),
-				tm->tm_mon >= 12,
-				tm->tm_mday < 1,
-				tm->tm_mday > rtc_month_days(tm->tm_mon, tm->tm_year + OS_REF_YEAR),
-				tm->tm_hour >= 24,
-				tm->tm_min >= 60,
-				tm->tm_sec >= 60);
+		|| tm->tm_sec >= 60)
 		return -EINVAL;
-	}
 	return 0;
 }
 
@@ -169,13 +161,9 @@ static int tps6591x_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	tm->tm_min = buff[1];
 	tm->tm_hour = buff[2];
 	tm->tm_mday = buff[3];
-	tm->tm_mon = buff[4];
-	tm->tm_year = buff[5];
+	tm->tm_mon = buff[4] - 1;
+	tm->tm_year = buff[5] + RTC_YEAR_OFFSET;
 	tm->tm_wday = buff[6];
-	if(tm->tm_mon >= 1)
-		tm->tm_mon -=1;
-	else
-		printk("[Error]tps6591x_rtc_read_time tm->tm_mon=%x! This value should be above 0. \n", tm->tm_mon );
 	print_time(dev, tm);
 	return tps6591x_rtc_valid_tm(tm);
 }
@@ -261,10 +249,10 @@ static int tps6591x_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	buff[1] = tm->tm_min;
 	buff[2] = tm->tm_hour;
 	buff[3] = tm->tm_mday;
-	buff[4] = tm->tm_mon;
-	buff[5] = tm->tm_year;
+	buff[4] = tm->tm_mon + 1;
+	buff[5] = tm->tm_year % RTC_YEAR_OFFSET;
 	buff[6] = tm->tm_wday;
-	buff[4] = tm->tm_mon+1;
+
 	print_time(dev, tm);
 	convert_decimal_to_bcd(buff, sizeof(buff));
 	err = tps6591x_rtc_stop(dev);
@@ -284,71 +272,6 @@ static int tps6591x_rtc_set_time(struct device *dev, struct rtc_time *tm)
 		dev_err(dev->parent, "\n failed to set RTC_ENABLE\n");
 		return err;
 	}
-
-	return 0;
-}
-
-static int tps6591x_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
-{
-	struct tps6591x_rtc *rtc = dev_get_drvdata(dev);
-	unsigned long seconds;
-	u8 buff[6];
-	int err;
-	struct rtc_time tm;
-
-	if (rtc->irq == -1)
-		return -EIO;
-
-	dev_info(dev->parent, "\n setting alarm to requested time::\n");
-	print_time(dev->parent, &alrm->time);
-	rtc_tm_to_time(&alrm->time, &seconds);
-	tps6591x_rtc_read_time(dev, &tm);
-	rtc_tm_to_time(&tm, &rtc->epoch_start);
-
-	if (WARN_ON(alrm->enabled && (seconds < rtc->epoch_start))) {
-		dev_err(dev->parent, "\n can't set alarm to requested time\n");
-		return -EINVAL;
-	}
-
-	if (alrm->enabled && !rtc->irq_en) {
-		rtc->irq_en = true;
-	} else if (!alrm->enabled && rtc->irq_en) {
-		rtc->irq_en = false;
-	}
-
-	buff[0] = alrm->time.tm_sec;
-	buff[1] = alrm->time.tm_min;
-	buff[2] = alrm->time.tm_hour;
-	buff[3] = alrm->time.tm_mday;
-	buff[4] = alrm->time.tm_mon+1;
-	buff[5] = alrm->time.tm_year;
-	convert_decimal_to_bcd(buff, sizeof(buff));
-	err = tps6591x_write_regs(dev, RTC_ALARM, sizeof(buff), buff);
-	if (err)
-		dev_err(dev->parent, "\n unable to program alarm\n");
-
-	return err;
-}
-
-static int tps6591x_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
-{
-	u8 buff[6];
-	int err;
-
-	err = tps6591x_read_regs(dev, RTC_ALARM, sizeof(buff), buff);
-	if (err)
-		return err;
-	convert_bcd_to_decimal(buff, sizeof(buff));
-
-	alrm->time.tm_sec = buff[0];
-	alrm->time.tm_min = buff[1];
-	alrm->time.tm_hour = buff[2];
-	alrm->time.tm_mday = buff[3];
-	alrm->time.tm_mon = buff[4]-1;
-	alrm->time.tm_year = buff[5];
-
-	dev_info(dev->parent, "\n getting alarm time::\n");
-	print_time(dev, &alrm->time);
 
 	return 0;
 }
@@ -386,6 +309,71 @@ static int tps6591x_rtc_alarm_irq_enable(struct device *dev,
 			return err;
 		rtc->irq_en = false;
 	}
+	return 0;
+}
+
+static int tps6591x_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
+{
+	struct tps6591x_rtc *rtc = dev_get_drvdata(dev);
+	unsigned long seconds;
+	u8 buff[6];
+	int err;
+	struct rtc_time tm;
+
+	if (rtc->irq == -1)
+		return -EIO;
+
+	dev_info(dev->parent, "\n setting alarm to requested time::\n");
+	print_time(dev->parent, &alrm->time);
+	rtc_tm_to_time(&alrm->time, &seconds);
+	tps6591x_rtc_read_time(dev, &tm);
+	rtc_tm_to_time(&tm, &rtc->epoch_start);
+
+	if (WARN_ON(alrm->enabled && (seconds < rtc->epoch_start))) {
+		dev_err(dev->parent, "\n can't set alarm to requested time\n");
+		return -EINVAL;
+	}
+
+	err = tps6591x_rtc_alarm_irq_enable(dev, alrm->enabled);
+	if(err) {
+		dev_err(dev->parent, "\n can't set alarm irq\n");
+		return err;
+	}
+
+	buff[0] = alrm->time.tm_sec;
+	buff[1] = alrm->time.tm_min;
+	buff[2] = alrm->time.tm_hour;
+	buff[3] = alrm->time.tm_mday;
+	buff[4] = alrm->time.tm_mon + 1;
+	buff[5] = alrm->time.tm_year % RTC_YEAR_OFFSET;
+	convert_decimal_to_bcd(buff, sizeof(buff));
+	err = tps6591x_write_regs(dev, RTC_ALARM, sizeof(buff), buff);
+	if (err)
+		dev_err(dev->parent, "\n unable to program alarm\n");
+
+	return err;
+}
+
+static int tps6591x_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
+{
+	u8 buff[6];
+	int err;
+
+	err = tps6591x_read_regs(dev, RTC_ALARM, sizeof(buff), buff);
+	if (err)
+		return err;
+	convert_bcd_to_decimal(buff, sizeof(buff));
+
+	alrm->time.tm_sec = buff[0];
+	alrm->time.tm_min = buff[1];
+	alrm->time.tm_hour = buff[2];
+	alrm->time.tm_mday = buff[3];
+	alrm->time.tm_mon = buff[4] - 1;
+	alrm->time.tm_year = buff[5] + RTC_YEAR_OFFSET;
+
+	dev_info(dev->parent, "\n getting alarm time::\n");
+	print_time(dev, &alrm->time);
+
 	return 0;
 }
 

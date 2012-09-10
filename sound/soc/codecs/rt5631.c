@@ -32,6 +32,13 @@
 
 #include "rt5631.h"
 
+#include <../board-cardhu.h>
+
+#define RTK_IOCTL
+#if defined(RTK_IOCTL)
+#include "rt56xx_ioctl.h"
+#endif //RTK_IOCTL
+#define VIRTUAL_REG_FOR_MISC_FUNC 0x90
 #define RT5631_PWR_ADC_L_CLK (1 << 11)
 
 #define AUDIO_IOC_MAGIC	0xf7
@@ -62,6 +69,10 @@
 
 #define RT5631_VERSION "0.01 alsa 1.0.24"
 #define RETRY_MAX (5)
+#define TF700T_PCB_ER1 (0x3)
+#define DEPOP_DELAY (1)
+
+#define CODEC_SPKVDD_POWER_5V0_EN_GPIO TPS6591X_GPIO_8
 
 struct rt5631_priv {
 	int codec_version;
@@ -85,13 +96,15 @@ static int input_source=INPUT_SOURCE_NORMAL;
 static int output_source=OUTPUT_SOURCE_NORMAL;
 static int input_agc = INPUT_SOURCE_NO_AGC;
 static int audio_codec_status = 0;
+static int project_id = 0;
 #if ENABLE_ALC
 static bool spk_out_flag = false;
 static bool ADC_flag = false;
 static bool DMIC_flag= true;   //heaset = false;
 #endif
-struct snd_soc_codec *global_audio_codec = NULL;
-EXPORT_SYMBOL(global_audio_codec) ;;
+struct snd_soc_codec *rt5631_audio_codec = NULL;
+EXPORT_SYMBOL(rt5631_audio_codec) ;
+extern bool headset_alive;
 
 module_param(timesofbclk, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(timeofbclk, "relationship between bclk and fs");
@@ -261,21 +274,22 @@ struct rt5631_init_reg {
  * change Mic1 & mic2 to differential mode
  */
 static struct rt5631_init_reg init_list[] = {
+	{RT5631_ADC_CTRL_1		, 0x8080},
 	{RT5631_SPK_OUT_VOL		, 0xc7c7},
 	{RT5631_HP_OUT_VOL		, 0xc5c5},
 	{RT5631_MONO_AXO_1_2_VOL	, 0xa080},
-	{RT5631_ADC_REC_MIXER		, 0xb0b0},
+	{RT5631_ADC_REC_MIXER		, 0xb0f0},
 	{RT5631_MIC_CTRL_2		, 0x6600},
 	{RT5631_OUTMIXER_L_CTRL		, 0xdfC0},
 	{RT5631_OUTMIXER_R_CTRL		, 0xdfC0},
 	{RT5631_SPK_MIXER_CTRL		, 0xd8d8},
 	{RT5631_SPK_MONO_OUT_CTRL	, 0x6c00},
-	{RT5631_GEN_PUR_CTRL_REG	, 0x6e00}, //Speaker AMP ratio gain is 1.99X (5.99dB)
+	{RT5631_GEN_PUR_CTRL_REG	, 0x7e00}, //Speaker AMP ratio gain is 1.99X (5.99dB)
 	{RT5631_SPK_MONO_HP_OUT_CTRL	, 0x0000},
-	{RT5631_MIC_CTRL_1        	, 0x8000},      //change Mic1 to differential mode,mic2 to single end mode
+	{RT5631_MIC_CTRL_1        	, 0x8000}, //change Mic1 to differential mode,mic2 to single end mode
 	{RT5631_INT_ST_IRQ_CTRL_2	, 0x0f18},
-	{RT5631_ALC_CTRL_1	, 0x0B00},  //ALC Attack time  = 170.667ms, Recovery time = 83.333 us
-	{RT5631_ALC_CTRL_3  , 0x2410}, //Enable for DAC path, Limit level = -6dB,
+	{RT5631_ALC_CTRL_1	, 0x0B00}, //ALC Attack time  = 170.667ms, Recovery time = 83.333us
+	{RT5631_ALC_CTRL_3  , 0x2410}, //Enable for DAC path, Limit level = -6dBFS
 };
 #define RT5631_INIT_REG_LEN ARRAY_SIZE(init_list)
 
@@ -344,9 +358,9 @@ struct hw_eq_preset hweq_preset[] = {
 	{TF300TG ,{0x1CD0,0x1D18,0xC21C,0x1E30,0xF900,0xC2C8,0x1EC4,
 		0x095B,0xCA22,0x1C10,0x1830,0xF76D,0x0FEC,0xC130,
 		0x1ED6,0x1F69},0x403F, 0x8004, 0x0005},
-	{TF700T ,{0x0264, 0xFE43, 0xC180, 0x1E91, 0x0FEC,0xC204,
-		0x1E5E, 0xF805, 0xC5FC, 0x1C10, 0x095B, 0x1561,
-		0x0424,0xC0B6,0x1F4C,0x1FA5},0x403E, 0x8003, 0x0005},
+	{TF700T ,{0x0264, 0xFE43, 0xC0E5, 0x1F2C, 0x0C73,0xC19B,
+		0x1EB2, 0xFA19, 0xC5FC, 0x1C10, 0x095B, 0x1561,
+		0x0699,0xC18B,0x1E7F,0x1F3D},0x402A, 0x8003, 0x0005},
 };
 
 static int rt5631_reg_init(struct snd_soc_codec *codec)
@@ -526,22 +540,37 @@ static int rt5631_set_gain(struct snd_kcontrol *kcontrol,
 		printk("%s(): set ALC AMIC parameter\n", __func__);
 		DMIC_flag = false;
 		if(!spk_out_flag){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			}
 		}
 		#endif
 		/* set heaset mic gain */
-		printk("%s(): headset gain = 0dB\n", __func__);
-		rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0000, 0x001f);	//boost 0dB
+		printk("%s():set headset gain\n", __func__);
+		if(project_id == TEGRA3_PROJECT_TF700T)
+			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0005, 0x001f);
+		else
+			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0000, 0x001f);
 	}else{
 		#if ENABLE_ALC
 		printk("%s(): set ALC DMIC parameter\n", __func__);
 		DMIC_flag = true;
 		if(!spk_out_flag){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			}
 		}
 		#endif
 		/* set dmic gain */
@@ -550,6 +579,9 @@ static int rt5631_set_gain(struct snd_kcontrol *kcontrol,
 			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0000, 0x001f);	//boost 0dB
 		}else{
 			printk("%s(): use codec for capture gain\n", __func__);
+			if(project_id == TEGRA3_PROJECT_TF700T)
+			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0013, 0x00ff);
+			else
 			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x000f, 0x001f);    //boost 22.5dB
 		}
 	}
@@ -565,7 +597,7 @@ SOC_ENUM("MIC1 Boost", rt5631_enum[6]),
 SOC_ENUM("MIC2 Mode Control", rt5631_enum[4]),
 SOC_ENUM("MIC2 Boost", rt5631_enum[7]),
 SOC_ENUM("MONOIN Mode Control", rt5631_enum[5]),
-SOC_DOUBLE("PCM Playback Volume", RT5631_STEREO_DAC_VOL_2, 8, 0, 255, 1),
+//SOC_DOUBLE("PCM Playback Volume", RT5631_STEREO_DAC_VOL_2, 8, 0, 255, 1),
 SOC_DOUBLE("PCM Playback Switch", RT5631_STEREO_DAC_VOL_1, 15, 7, 1, 1),
 SOC_DOUBLE("MONOIN_RX Capture Volume", RT5631_MONO_INPUT_VOL, 8, 0, 31, 1),
 SOC_DOUBLE("AXI Capture Volume", RT5631_AUX_IN_VOL, 8, 0, 31, 1),
@@ -688,6 +720,10 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_codec *codec = w->codec;
 	static int spkl_out_enable, spkr_out_enable;
 	unsigned int rt531_dac_pwr = 0;
+	unsigned int tf700t_pcb_id = 0;
+	unsigned int reg_val;
+
+	tf700t_pcb_id = tegra3_query_pcba_revision_pcbid();
 	rt531_dac_pwr = (rt5631_read(codec, RT5631_PWR_MANAG_ADD1) & 0x0300)>>8;
 
 	switch (event) {
@@ -696,21 +732,28 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 			printk("spk_event --ALC_SND_SOC_DAPM_POST_PMU\n");
 			spk_out_flag = true;
 			//Enable ALC
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0B00);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0000);
-			if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201 )
+			if(project_id == TEGRA3_PROJECT_TF201){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0B00);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0000);
 				rt5631_write(codec, RT5631_ALC_CTRL_3, 0x6410);
-			else
+			}else if(project_id == TEGRA3_PROJECT_TF300TG){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0B00);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0000);
 				rt5631_write(codec, RT5631_ALC_CTRL_3, 0x6510);
+			}else if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0307);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0000);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0x6510);
+			}
 		#endif
 		#if ENABLE_EQ
 			if(rt531_dac_pwr==0x3 ){
 				  rt5631_write_mask(codec,RT5631_PWR_MANAG_ADD1, 0x8000, 0x8000); //enable IIS interface power
-				  if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201){
+				  if(project_id == TEGRA3_PROJECT_TF201){
 						rt5631_update_eqmode(codec,TF201_PAD);
-				  }else if(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG){
+				  }else if(project_id == TEGRA3_PROJECT_TF300TG){
 						rt5631_update_eqmode(codec,TF300TG);
-				  }else if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T){
+				  }else if(project_id == TEGRA3_PROJECT_TF700T){
 						rt5631_update_eqmode(codec,TF700T);
 				  }else{
 						rt5631_update_eqmode(codec,TF201_PAD);
@@ -718,6 +761,21 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 			}
 		#endif
 		if (!spkl_out_enable && !strcmp(w->name, "SPKL Amp")) {
+
+			if(project_id == TEGRA3_PROJECT_TF201){
+				rt5631_write_mask(codec, RT5631_SPK_OUT_VOL,0x0700, RT5631_L_VOL_MASK);
+			}else if(project_id == TEGRA3_PROJECT_TF300TG){
+				rt5631_write_mask(codec, RT5631_SPK_OUT_VOL,0x0700, RT5631_L_VOL_MASK);
+			}else if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write_mask(codec, RT5631_SPK_OUT_VOL,0x0600, RT5631_L_VOL_MASK);
+			}
+			if((tf700t_pcb_id == TF700T_PCB_ER1) &&
+				(project_id == TEGRA3_PROJECT_TF700T)){
+			   rt5631_write_mask(codec,
+                               RT5631_SPK_OUT_VOL,0x0d00, RT5631_L_VOL_MASK);
+			   printk("%s: %s\n",
+                              __func__, "TF700T ER1 spk L ch vol = -7.5dB");
+			}
 
 			rt5631_write_mask(codec, RT5631_PWR_MANAG_ADD4,
 					PWR_SPK_L_VOL, PWR_SPK_L_VOL);
@@ -728,6 +786,22 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 			spkl_out_enable = 1;
 		}
 		if (!spkr_out_enable && !strcmp(w->name, "SPKR Amp")) {
+
+			if(project_id == TEGRA3_PROJECT_TF201){
+				rt5631_write_mask(codec, RT5631_SPK_OUT_VOL,0x0007, RT5631_R_VOL_MASK);
+			}else if(project_id == TEGRA3_PROJECT_TF300TG){
+				rt5631_write_mask(codec, RT5631_SPK_OUT_VOL,0x0007, RT5631_R_VOL_MASK);
+			}else if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write_mask(codec, RT5631_SPK_OUT_VOL,0x0006, RT5631_R_VOL_MASK);
+			}
+			if((tf700t_pcb_id == TF700T_PCB_ER1) &&
+				(project_id  == TEGRA3_PROJECT_TF700T)){
+                            rt5631_write_mask(codec,
+                                RT5631_SPK_OUT_VOL,0x000d, RT5631_R_VOL_MASK);
+                            printk("%s: %s\n",
+                               __func__, "TF700T ER1 spk R ch vol = -7.5dB");
+			}
+
 			rt5631_write_mask(codec, RT5631_PWR_MANAG_ADD4,
 					PWR_SPK_R_VOL, PWR_SPK_R_VOL);
 			rt5631_write_mask(codec, RT5631_PWR_MANAG_ADD1,
@@ -766,13 +840,25 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 			//Disable ALC
 			rt5631_write_mask(codec, RT5631_ALC_CTRL_3, 0x2000,0xf000);
 		}else if(!spk_out_flag && DMIC_flag ){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			}
 		}else if(!spk_out_flag && !DMIC_flag ){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			}
 		}
 		#endif
 		#if ENABLE_EQ
@@ -785,6 +871,12 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 
 	default:
 		return 0;
+	}
+
+	if(project_id == TEGRA3_PROJECT_TF700T){
+		rt5631_write_index(codec, 0x48, 0xF73C);
+		reg_val = rt5631_read_index(codec, 0x48);
+		printk("%s -codec index 0x48=0x%04X\n", __FUNCTION__, reg_val);
 	}
 
 	return 0;
@@ -978,6 +1070,7 @@ static int dac_to_hp_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMD:
+		
 		if (hp_en) {
 			if (rt5631->codec_version) {
 				hp_mute_unmute_depop_onebit(codec, 0);
@@ -1212,14 +1305,30 @@ static int adc_event(struct snd_soc_dapm_widget *w,
 		printk("adc_event --ALC_SND_SOC_DAPM_POST_PMU\n");
 		ADC_flag = true;
 		if(!spk_out_flag && DMIC_flag ){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			}
 		}else if(!spk_out_flag && !DMIC_flag ){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
+				rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0005, 0x001f);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			}
 		}
+		msleep(DEPOP_DELAY);
+		rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0000, 0x8080);
+
 		#endif
 		break;
 
@@ -1232,6 +1341,8 @@ static int adc_event(struct snd_soc_dapm_widget *w,
 			rt5631_write_mask(codec, RT5631_ALC_CTRL_3, 0x2000,0xf000);
 			}
 		#endif
+		rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x8080, 0x8080);
+
 		break;
 
 	default:
@@ -1765,6 +1876,8 @@ static int rt5631_hifi_pcm_params(struct snd_pcm_substream *substream,
 	if (SNDRV_PCM_STREAM_CAPTURE == stream) {
 		if (rt5631->dmic_used_flag)
 			rt5631_set_dmic_params(codec, params);
+		if(headset_alive)
+			rt5631_close_dmic(codec);
 	}
 
 	rt5631_write_mask(codec, RT5631_SDP_CTRL, iface, SDP_I2S_DL_MASK);
@@ -2276,12 +2389,203 @@ static int rt5631_set_bias_level(struct snd_soc_codec *codec,
 	return 0;
 }
 
+#if defined(RTK_IOCTL)
+#if defined(CONFIG_SND_HWDEP)
+#define RT_CE_CODEC_HWDEP_NAME "rt56xx hwdep "
+
+static int rt56xx_hwdep_open(struct snd_hwdep *hw, struct file *file)
+{
+	printk("enter %s\n", __func__);
+	return 0;
+}
+
+static int rt56xx_hwdep_release(struct snd_hwdep *hw, struct file *file)
+{
+	printk("enter %s\n", __func__);
+	return 0;
+}
+
+
+static int rt56xx_hwdep_ioctl_common(struct snd_hwdep *hw, struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct rt56xx_cmd rt56xx;
+	int *buf;
+	int *p;
+	struct rt56xx_cmd __user *_rt56xx =(struct rt56xx_cmd *)arg;
+	struct snd_soc_codec *codec = hw->private_data;
+	u16 virtual_reg;
+	int rt5631_eq_mode;
+
+	if (copy_from_user(&rt56xx, _rt56xx, sizeof(rt56xx))) {
+		printk("copy_from_user faild\n");
+		return -EFAULT;
+	}
+
+	buf = kmalloc(sizeof(*buf) * rt56xx.number, GFP_KERNEL);
+	if (buf == NULL)
+		return -ENOMEM;
+	if (copy_from_user(buf, rt56xx.buf, sizeof(*buf) * rt56xx.number)) {
+		goto err;
+	}
+
+	switch (cmd) {
+		case RT_READ_CODEC_REG_IOCTL:
+			for (p = buf; p < buf + rt56xx.number/2; p++)
+			{
+				*(p+rt56xx.number/2) = snd_soc_read(codec, *p);
+			}
+			if (copy_to_user(rt56xx.buf, buf, sizeof(*buf) * rt56xx.number))
+				goto err;
+			break;
+		case RT_WRITE_CODEC_REG_IOCTL:
+			for (p = buf; p < buf + rt56xx.number/2; p++)
+				codec->write(codec, *p, *(p+rt56xx.number/2));
+			break;
+		case RT_READ_CODEC_INDEX_IOCTL:
+			for (p = buf; p < buf + rt56xx.number/2; p++)
+			{
+				*(p+rt56xx.number/2) = rt5631_read_index(codec, *p);
+			}
+			if (copy_to_user(rt56xx.buf, buf, sizeof(*buf) * rt56xx.number))
+				goto err;
+			break;
+		case RT_WRITE_CODEC_INDEX_IOCTL:
+			for (p = buf; p < buf + rt56xx.number/2; p++)
+				rt5631_write_index(codec, *p, *(p+rt56xx.number/2));
+			break;
+		case RT_SET_CODEC_HWEQ_IOCTL:
+			virtual_reg = rt5631_read(codec, VIRTUAL_REG_FOR_MISC_FUNC);
+			rt5631_eq_mode=(virtual_reg&0x00f0)>>4;
+
+			if ( rt5631_eq_mode == *buf)
+				break;
+
+			rt5631_update_eqmode(codec, *buf);
+
+			virtual_reg &= 0xff0f;
+			virtual_reg |= (*buf<<4);
+			rt5631_write(codec, VIRTUAL_REG_FOR_MISC_FUNC, virtual_reg);
+
+			break;
+		case RT_SET_CODEC_SPK_VOL_IOCTL:
+			snd_soc_update_bits(codec, RT5631_SPK_OUT_VOL,
+				RT5631_L_VOL_MASK | RT5631_R_VOL_MASK,
+				*(buf)<<RT5631_L_VOL_SFT | *(buf)<<RT5631_R_VOL_SFT);
+			break;
+		case RT_SET_CODEC_MIC_GAIN_IOCTL:
+			snd_soc_update_bits(codec, RT5631_MIC_CTRL_2,
+				RT5631_L_VOL_MASK | RT5631_R_VOL_MASK,
+				*(buf)<<12 | *(buf)<<8);
+			break;
+		case RT_GET_CODEC_ID:
+			*buf = rt5631_read(codec, RT5631_VENDOR_ID2);
+
+			if (copy_to_user(rt56xx.buf, buf, sizeof(*buf) * rt56xx.number))
+				goto err;
+			break;
+		default:
+			printk("unsupported io cmd\n");
+			break;
+	}
+
+	kfree(buf);
+	return 0;
+
+err:
+	kfree(buf);
+	return -EFAULT;
+
+}
+
+static int rt56xx_codec_dump_reg(struct snd_hwdep *hw, struct file *file, unsigned long arg)
+{
+	struct rt56xx_cmd rt56xx;
+	struct rt56xx_cmd __user *_rt56xx =(struct rt56xx_cmd *)arg;
+	int *buf;
+	struct snd_soc_codec *codec = hw->private_data;
+	int number = codec->reg_size;
+	int i;
+
+	printk(KERN_DEBUG "enter %s, number = %d\n", __func__, number);
+	if (copy_from_user(&rt56xx, _rt56xx, sizeof(rt56xx)))
+		return -EFAULT;
+
+	buf = kmalloc(sizeof(*buf) * number, GFP_KERNEL);
+	if (buf == NULL)
+		return -ENOMEM;
+
+	for (i = 0; i < number/2; i++)
+	{
+		buf[i] = i << 1;
+		buf[i+number/2] = codec->read(codec, buf[i]);
+	}
+	if (copy_to_user(rt56xx.buf, buf, sizeof(*buf) * i))
+		goto err;
+	rt56xx.number = number;
+	if (copy_to_user(_rt56xx, &rt56xx, sizeof(rt56xx)))
+		goto err;
+	kfree(buf);
+	return 0;
+err:
+	kfree(buf);
+	return -EFAULT;
+
+}
+
+static int rt56xx_hwdep_ioctl(struct snd_hwdep *hw, struct file *file, unsigned int cmd, unsigned long arg)
+{
+
+	printk("***********************rt56xx_hwdep_ioctl cmd=%x,arg=%lx**********************\n",cmd,arg);
+
+	if (cmd == RT_READ_ALL_CODEC_REG_IOCTL)
+	{
+		return rt56xx_codec_dump_reg(hw, file, arg);
+	}
+	else
+	{
+		return rt56xx_hwdep_ioctl_common(hw, file, cmd, arg);
+	}
+}
+
+static int realtek_ce_init_hwdep(struct snd_soc_codec *codec)
+{
+	struct snd_hwdep *hw;
+	struct snd_card *card = codec->card->snd_card;
+	int err;
+
+	if ((err = snd_hwdep_new(card, RT_CE_CODEC_HWDEP_NAME, 0, &hw)) < 0)
+		return err;
+
+	strcpy(hw->name, RT_CE_CODEC_HWDEP_NAME);
+	hw->private_data = codec;
+	hw->ops.open = rt56xx_hwdep_open;
+	hw->ops.release = rt56xx_hwdep_release;
+	hw->ops.ioctl = rt56xx_hwdep_ioctl;
+	return 0;
+}
+#endif
+#endif //RTK_IOCTL
+
 static int rt5631_probe(struct snd_soc_codec *codec)
 {
 	struct rt5631_priv *rt5631 = snd_soc_codec_get_drvdata(codec);
 	unsigned int val;
 	int ret;
 
+	tegra_gpio_enable(CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	ret = gpio_request(CODEC_SPKVDD_POWER_5V0_EN_GPIO, "RT5631_5V");
+	if (ret) {
+		printk("gpio_request failed for input %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	}
+	ret = gpio_direction_output(CODEC_SPKVDD_POWER_5V0_EN_GPIO, 1) ;
+	if (ret) {
+		printk("gpio_direction_output failed for input %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	}
+	printk("GPIO = %d , state = %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO,
+			gpio_get_value(CODEC_SPKVDD_POWER_5V0_EN_GPIO));
+	gpio_set_value(CODEC_SPKVDD_POWER_5V0_EN_GPIO, 1);
+
+	project_id = tegra3_get_project_id();
 	ret = snd_soc_codec_set_cache_io(codec, 8, 16, SND_SOC_I2C);
 	if (ret != 0) {
 		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
@@ -2313,7 +2617,7 @@ static int rt5631_probe(struct snd_soc_codec *codec)
 
 	codec->dapm.bias_level = SND_SOC_BIAS_STANDBY;
 	rt5631_codec = codec;
-	global_audio_codec = codec;
+	rt5631_audio_codec = codec;
 	snd_soc_add_controls(codec, rt5631_snd_controls,
 		ARRAY_SIZE(rt5631_snd_controls));
 	rt5631_add_widgets(codec);
@@ -2343,6 +2647,13 @@ static int rt5631_probe(struct snd_soc_codec *codec)
 		printk("%s: incorrect audio codec rt5631 vendor ID\n", __func__);
 
 	pr_info("RT5631 initial ok!\n");
+
+	#if defined(RTK_IOCTL)
+       #if defined(CONFIG_SND_HWDEP)
+       printk("************************realtek_ce_init_hwdep*************************************\n");
+       realtek_ce_init_hwdep(rt5631_codec);
+       #endif
+       #endif //RTK_IOCTL
 
 	return 0;
 }
@@ -2457,6 +2768,15 @@ static __devexit int rt5631_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
+static int rt5631_i2c_shutdown(struct i2c_client *client)
+{
+
+	printk(KERN_INFO "%s+ #####\n", __func__);
+	rt5631_set_bias_level(rt5631_codec, SND_SOC_BIAS_OFF);
+	printk(KERN_INFO "%s- #####\n", __func__);
+	return 0;
+}
+
 struct i2c_driver rt5631_i2c_driver = {
 	.driver = {
 		.name = "rt5631",
@@ -2464,6 +2784,7 @@ struct i2c_driver rt5631_i2c_driver = {
 	},
 	.probe = rt5631_i2c_probe,
 	.remove   = __devexit_p(rt5631_i2c_remove),
+	.shutdown = rt5631_i2c_shutdown,
 	.id_table = rt5631_i2c_id,
 };
 

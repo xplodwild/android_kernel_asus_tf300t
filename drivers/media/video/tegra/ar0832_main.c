@@ -23,9 +23,11 @@
 #include <linux/regulator/consumer.h>
 #include <media/ar0832_main.h>
 
-#define POS_LOW  0
-#define POS_HIGH 1000
-#define SETTLETIME_MS 100
+#define POS_ACTUAL_LOW			0
+#define POS_ACTUAL_HIGH			255
+#define SETTLE_TIME				100
+#define SLEW_RATE_DEFAULT		1
+
 
 struct ar0832_sensor_info {
 	int mode;
@@ -33,7 +35,7 @@ struct ar0832_sensor_info {
 };
 
 struct ar0832_focuser_info {
-	struct ar0832_focuser_config config;
+	struct nv_focuser_config config;
 	int focuser_init_flag;
 	u16 last_position;
 };
@@ -142,7 +144,7 @@ static struct ar0832_reg mode_3264X2448_8140[] = {
 	{0x3E12, 0x4B24},
 	{0x3E14, 0xA3CF},
 	{0x3E16, 0x8802},
-	{0x3E18, 0x8401},
+	{0x3E18, 0x84FF},
 	{0x3E1A, 0x8601},
 	{0x3E1C, 0x8401},
 	{0x3E1E, 0x840A},
@@ -190,7 +192,6 @@ static struct ar0832_reg mode_3264X2448_8140[] = {
 	{0x3ED4, 0xAFC4},
 	{0x3ED6, 0x909B},
 	{0x3EE0, 0x2424},
-	{0x3EE2, 0x9797},
 	{0x3EE4, 0xC100},
 	{0x3EE6, 0x0540},
 	{0x3174, 0x8000},
@@ -228,10 +229,7 @@ static struct ar0832_reg mode_3264X2448_8140[] = {
 	{0x301A, 0x8650},	/* RESET_REGISTER */
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
@@ -249,8 +247,8 @@ static struct ar0832_reg mode_3264X2448_8141[] = {
 	{0x306E, 0xFC80},
 	{0x30B2, 0xC000},
 	{0x30D6, 0x0800},
-	{0x316C, 0xB42F},
-	{0x316E, 0x869A},
+	{0x316C, 0xB42A},
+	{0x316E, 0x869C},
 	{0x3170, 0x210E},
 	{0x317A, 0x010E},
 	{0x31E0, 0x1FB9},
@@ -281,7 +279,7 @@ static struct ar0832_reg mode_3264X2448_8141[] = {
 	{0x3E26, 0x0088},
 	{0x3E28, 0x2E8A},
 	{0x3E30, 0x0000},
-	{0x3E32, 0x8801},
+	{0x3E32, 0x00FF},
 	{0x3E34, 0x4029},
 	{0x3E36, 0x00FF},
 	{0x3E38, 0x8469},
@@ -311,15 +309,14 @@ static struct ar0832_reg mode_3264X2448_8141[] = {
 	{0x3E98, 0x2B02},
 	{0x3E92, 0x2A04},
 	{0x3E94, 0x2509},
-	{0x3E96, 0x0000},
+	{0x3E96, 0xF000},
 	{0x3E9A, 0x2905},
 	{0x3E9C, 0x00FF},
 	{0x3ECC, 0x00EB},
 	{0x3ED0, 0x1E24},
-	{0x3ED4, 0xAFC4},
+	{0x3ED4, 0xFAA4},
 	{0x3ED6, 0x909B},
 	{0x3EE0, 0x2424},
-	{0x3EE2, 0x9797},
 	{0x3EE4, 0xC100},
 	{0x3EE6, 0x0540},
 	{0x3174, 0x8000},
@@ -357,10 +354,7 @@ static struct ar0832_reg mode_3264X2448_8141[] = {
 	{0x301A, 0x8650},	/* RESET_REGISTER */
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
@@ -494,10 +488,7 @@ static struct ar0832_reg mode_2880X1620_8140[] = {
 	{0x301A, 0x8650},	/* RESET_REGISTER */
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
@@ -622,10 +613,7 @@ static struct ar0832_reg mode_2880X1620_8141[] = {
 	{0x301A, 0x8650},	/* RESET_REGISTER */
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
@@ -750,7 +738,7 @@ static struct ar0832_reg mode_1920X1080_8140[] = {
 	{0x3178, 0x0000},	/* RESERVED_MFR_3178 */
 	{0x3ED0, 0x1E24},	/* RESERVED_MFR_3ED0 */
 
-	{0x0342, 0x103B},	/* LINE_LENGTH_PCK */
+	{0x0342, 0x1139},	/* LINE_LENGTH_PCK */
 	{0x0340, 0x05C4},	/* FRAME_LENGTH_LINES */
 	{0x0202, 0x05C4},	/* COARSE_INTEGRATION_TIME */
 	{0x3014, 0x0702},	/* FINE_INTEGRATION_TIME */
@@ -759,10 +747,7 @@ static struct ar0832_reg mode_1920X1080_8140[] = {
 	{0x301A, 0x8650},	/* RESET_REGISTER */
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
@@ -878,7 +863,7 @@ static struct ar0832_reg mode_1920X1080_8141[] = {
 	{0x3178, 0x0000},	/* RESERVED_MFR_3178 */
 	{0x3ED0, 0x1E24},	/* RESERVED_MFR_3ED0 */
 
-	{0x0342, 0x103B},	/* LINE_LENGTH_PCK */
+	{0x0342, 0x1139},	/* LINE_LENGTH_PCK */
 	{0x0340, 0x05C4},	/* FRAME_LENGTH_LINES */
 	{0x0202, 0x05C4},	/* COARSE_INTEGRATION_TIME */
 	{0x3014, 0x0702},	/* FINE_INTEGRATION_TIME */
@@ -887,10 +872,7 @@ static struct ar0832_reg mode_1920X1080_8141[] = {
 	{0x301A, 0x8650},	/* RESET_REGISTER */
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
@@ -1032,14 +1014,10 @@ static struct ar0832_reg mode_1632X1224_8140[] = {
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 
 	/* todo 8-bit write */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
-
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
 };
@@ -1180,14 +1158,10 @@ static struct ar0832_reg mode_1632X1224_8141[] = {
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 
 	/* todo 8-bit write */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
-
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
 };
@@ -1285,8 +1259,6 @@ static struct ar0832_reg mode_800X600_8140[] = {
 
 	/* mode end */
 	{0x3174, 0x8000},
-	/* STATE= Minimum Gain, 1500 */
-	{0x305E, 0x13AF},
 
 	/* [RAW10] */
 	{0x0112, 0x0A0A},
@@ -1327,8 +1299,10 @@ static struct ar0832_reg mode_800X600_8140[] = {
 	{0x301A, 0x8250},
 	{0x301A, 0x8650},
 	{0x301A, 0x8658},
-	{0x0104, 0x0000},
+	/* STATE= Minimum Gain, 1500 */
+	{0x305E, 0x13AF},
 
+	{0x0104, 0x0000},
 	{0x301A, 0x065C},
 	{ar0832_TABLE_END, 0x0000}
 };
@@ -1469,14 +1443,10 @@ static struct ar0832_reg mode_800X600_8141[] = {
 	{0x301A, 0x8658},	/* RESET_REGISTER */
 
 	/* gain */
-	{0x3056, 0x10AA},	/* gain */
-	{0x3058, 0x10AA},	/* gain */
-	{0x305a, 0x10AA},	/* gain */
-	{0x305c, 0x10AA},	/* gain */
+	{0x305e, 0x10AA},	/* gain */
 
 	/* todo 8-bit write */
 	{0x0104, 0x0000},	/* GROUPED_PARAMETER_HOLD */
-
 	{0x301A, 0x065C},	/* RESET_REGISTER */
 	{ar0832_TABLE_END, 0x0000}
 };
@@ -1554,7 +1524,7 @@ static inline void ar0832_get_focuser_data_regs(struct ar0832_reg *regs,
 	regs->val = (value) & 0xFFFF;
 }
 
-static inline void ar0832_set_gain_reg(struct ar0832_reg *regs, u16 gain)
+static inline void ar0832_get_gain_regs(struct ar0832_reg *regs, u16 gain)
 {
 	/* global_gain register*/
 	regs->addr = AR0832_GLOBAL_GAIN_REG;
@@ -1682,13 +1652,28 @@ static int ar0832_write_table(struct ar0832_dev *dev,
 {
 	int err;
 	const struct ar0832_reg *next;
+	u16 val;
+	int i;
 
 	for (next = table; next->addr != ar0832_TABLE_END; next++) {
 		if (next->addr ==  ar0832_TABLE_WAIT_MS) {
 			ar0832_msleep(next->val);
 			continue;
 		}
-		err = ar0832_write_reg_helper(dev, next->addr, next->val);
+
+		val = next->val;
+		/* When an override list is passed in, replace the reg */
+		/* value to write if the reg is in the list            */
+		if (override_list) {
+			for (i = 0; i < num_override_regs; i++) {
+				if (next->addr == override_list[i].addr) {
+					val = override_list[i].val;
+					break;
+				}
+			}
+		}
+
+		err = ar0832_write_reg_helper(dev, next->addr, val);
 		if (err)
 			return err;
 	}
@@ -1754,7 +1739,7 @@ static int ar0832_set_gain(struct ar0832_dev *dev, u16 gain)
 
 	ret = ar0832_write_reg8(dev->i2c_client, AR0832_GROUP_HOLD_REG, 0x1);
 	/* Gain Registers Start */
-	ar0832_set_gain_reg(&reg_list_gain, gain);
+	ar0832_get_gain_regs(&reg_list_gain, gain);
 	ret |= ar0832_write_reg16(dev->i2c_client,
 				reg_list_gain.addr,
 				reg_list_gain.val);
@@ -1772,9 +1757,8 @@ static int ar0832_set_mode(struct ar0832_dev *dev,
 {
 	int sensor_mode;
 	int err;
-	int ret;
 	struct i2c_client *i2c_client = dev->i2c_client;
-	struct ar0832_reg reg_frame_length, reg_coarse_time;
+	struct ar0832_reg reg_ovr[3];
 	struct ar0832_reg *mode_seq;
 
 	dev_dbg(&i2c_client->dev, "%s: ++\n", __func__);
@@ -1806,26 +1790,13 @@ static int ar0832_set_mode(struct ar0832_dev *dev,
 	if (err)
 		return err;
 
-	err = ar0832_write_table(dev, mode_seq, NULL, 0);
+	/* When we change the resolution */
+	ar0832_get_frame_length_regs(&reg_ovr[0], mode->frame_length);
+	ar0832_get_coarse_time_regs(&reg_ovr[1], mode->coarse_time);
+	ar0832_get_gain_regs(&reg_ovr[2], mode->gain);
+	err = ar0832_write_table(dev, mode_seq, reg_ovr, ARRAY_SIZE(reg_ovr));
 	if (err)
 		return err;
-
-	/* When we change the resolution */
-	ar0832_get_frame_length_regs(&reg_frame_length, mode->frame_length);
-	ret = ar0832_write_reg16(i2c_client, reg_frame_length.addr,
-		reg_frame_length.val);
-	if (ret)
-		return ret;
-
-	ar0832_get_coarse_time_regs(&reg_coarse_time, mode->coarse_time);
-	ret = ar0832_write_reg16(i2c_client, reg_coarse_time.addr,
-			reg_coarse_time.val);
-	if (ret)
-		return ret;
-
-	ret = ar0832_set_gain(dev, mode->gain);
-	if (ret)
-		return ret;
 
 	err = ar0832_write_table(dev, mode_end, NULL, 0);
 	if (err)
@@ -2006,7 +1977,7 @@ static int ar0832_focuser_set_position(struct ar0832_dev *dev,
 	return ret;
 }
 
-
+#ifdef AR0832_FOCUSER_DYNAMIC_STEP_TIME
 /*
  * This function is not currently called as we have the hardcoded
  * step time in ar0832_focuser_set_config function. If we need to
@@ -2062,6 +2033,7 @@ static u16 ar0832_get_focuser_vcm_step_time(struct ar0832_dev *dev)
 	return vt_pix_clk_freq_mhz;
 
 }
+#endif
 
 static inline
 int ar0832_get_sensorid(struct ar0832_dev *dev, u16 *sensor_id)
@@ -2177,7 +2149,6 @@ static long ar0832_ioctl(struct file *file,
 	}
 	case AR0832_IOCTL_SET_SENSOR_REGION:
 	{
-		struct ar0832_stereo_region region;
 		dev_dbg(&i2c_client->dev, "AR0832_IOCTL_SET_SENSOR_REGION\n");
 		/* Right now, it doesn't do anything */
 
@@ -2189,12 +2160,32 @@ static long ar0832_ioctl(struct file *file,
 			"%s AR0832_FOCUSER_IOCTL_GET_CONFIG\n", __func__);
 		if (copy_to_user((void __user *) arg,
 				 &dev->focuser_info->config,
-				 sizeof(dev->focuser_info->config))) {
+				 sizeof(struct nv_focuser_config)))
+        {
 			dev_err(&i2c_client->dev,
 				"%s: AR0832_FOCUSER_IOCTL_GET_CONFIG failed\n",
 				__func__);
 			return -EFAULT;
 		}
+		return 0;
+
+	case AR0832_FOCUSER_IOCTL_SET_CONFIG:
+		dev_info(&i2c_client->dev,
+				"%s AR0832_FOCUSER_IOCTL_SET_CONFIG\n", __func__);
+		if (copy_from_user(&dev->focuser_info->config,
+			(const void __user *)arg,
+			sizeof(struct nv_focuser_config)))
+		{
+			dev_err(&i2c_client->dev,
+					"%s: AR0832_FOCUSER_IOCTL_SET_CONFIG failed\n", __func__);
+			return -EFAULT;
+		}
+		dev_dbg(&i2c_client->dev,
+			"%s AR0832_FOCUSER_IOCTL_SET_CONFIG sucess "
+			"slew_rate %i, pos_working_high %i, pos_working_low %i\n",
+			__func__, dev->focuser_info->config.slew_rate,
+			dev->focuser_info->config.pos_working_low,
+			dev->focuser_info->config.pos_working_high);
 		return 0;
 
 	case AR0832_FOCUSER_IOCTL_SET_POSITION:
@@ -2472,9 +2463,12 @@ static int ar0832_probe(struct i2c_client *client,
 	dev->i2c_client = client;
 
 	/* focuser */
-	dev->focuser_info->config.settle_time = SETTLETIME_MS;
-	dev->focuser_info->config.pos_low = POS_LOW;
-	dev->focuser_info->config.pos_high = POS_HIGH;
+	dev->focuser_info->config.settle_time = SETTLE_TIME;
+	dev->focuser_info->config.slew_rate = SLEW_RATE_DEFAULT;
+	dev->focuser_info->config.pos_actual_low = POS_ACTUAL_LOW;
+	dev->focuser_info->config.pos_actual_high = POS_ACTUAL_HIGH;
+	dev->focuser_info->config.pos_working_low = POS_ACTUAL_LOW;
+	dev->focuser_info->config.pos_working_high = POS_ACTUAL_HIGH;
 
 	snprintf(dev->dname, sizeof(dev->dname), "%s-%s",
 		id->name, dev->pdata->id);
@@ -2576,3 +2570,4 @@ static void __exit ar0832_exit(void)
 
 module_init(ar0832_init);
 module_exit(ar0832_exit);
+MODULE_LICENSE("GPL v2");

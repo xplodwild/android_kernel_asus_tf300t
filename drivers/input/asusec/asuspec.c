@@ -163,6 +163,15 @@ int dbg_counter = 0;
 /*
  * functions definition
  */
+int asuspec_audio_recording(int record_enable){
+	if (record_enable)
+		asuspec_send_ec_req();
+	ec_chip->audio_recording = record_enable;
+	ASUSPEC_NOTICE("audio_recording = %d\n", ec_chip->audio_recording);
+	return 0;
+}
+EXPORT_SYMBOL(asuspec_audio_recording);
+
 int asuspec_is_usb_charger(int charger_enable){
 	int ret = 0;
 
@@ -202,7 +211,7 @@ int asuspec_battery_monitor(char *cmd){
 		return -1;
 	}
 	else {
-		if(factory_mode != 2){
+		if((factory_mode != 2) && (ec_chip->audio_recording == 0)){
 			mod_timer(&ec_chip->asuspec_timer,jiffies+(HZ * 1));
 		}
 		if (!strcmp(cmd, "status"))
@@ -687,6 +696,7 @@ static int __devinit asuspec_probe(struct i2c_client *client,
 	mutex_init(&ec_chip->state_change_lock);
 
 	ec_chip->ec_ram_init = 0;
+	ec_chip->audio_recording = 0;
 	ec_chip->status = 0;
 	ec_chip->ec_in_s3 = 0;
 	ec_chip->apwake_disabled = 0;
@@ -842,7 +852,7 @@ static ssize_t asuspec_charging_led_store(struct device *class,struct device_att
 		ASUSPEC_NOTICE("Fail to enter led test\n");
 	}
 
-	return 0;
+	return count;
 }
 
 static ssize_t asuspec_led_show(struct device *class,struct device_attribute *attr,char *buf)

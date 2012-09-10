@@ -29,8 +29,6 @@ struct ov5650_reg {
 	u16 val;
 };
 
-static struct ov5650_reg *last_mode;
-
 struct ov5650_sensor {
 	struct i2c_client *i2c_client;
 	struct ov5650_platform_data *pdata;
@@ -41,6 +39,11 @@ struct ov5650_info {
 	enum StereoCameraMode camera_mode;
 	struct ov5650_sensor left;
 	struct ov5650_sensor right;
+	struct ov5650_sensordata sensor_data;
+	struct mutex mutex_le;
+	struct mutex mutex_ri;
+	int power_refcnt_le;
+	int power_refcnt_ri;
 	u8 i2c_trans_buf[SIZEOF_I2C_TRANSBUF];
 };
 
@@ -120,7 +123,7 @@ static struct ov5650_reg mode_start[] = {
 	{0x4000, 0x01},
 	{0x401c, 0x48},
 	{0x401d, 0x08},
-	{0x5000, 0x00},
+	{0x5000, 0x06},
 	{0x5001, 0x00},
 	{0x5002, 0x00},
 	{0x503d, 0x00},
@@ -293,7 +296,6 @@ static struct ov5650_reg mode_2080x1164[] = {
 	{0x401d, 0x08},
 	{0x4001, 0x02},
 
-	{0x5000, 0x00},
 	{0x5001, 0x00},
 	{0x5002, 0x00},
 	{0x503d, 0x00},
@@ -416,7 +418,6 @@ static struct ov5650_reg mode_1920x1080[] = {
 	{0x401d, 0x08},
 	{0x4001, 0x02},
 
-	{0x5000, 0x00},
 	{0x5001, 0x00},
 	{0x5002, 0x00},
 	{0x503d, 0x00},
@@ -666,7 +667,6 @@ static struct ov5650_reg mode_320x240[] = {
 	{0x3810, 0x40},
 	{0x3836, 0x41},
 	{0x505f, 0x04},
-	{0x5000, 0x06},
 	{0x5001, 0x00},
 	{0x5002, 0x02},
 	{0x503d, 0x00},
@@ -790,7 +790,7 @@ static int ov5650_read_reg(struct i2c_client *client, u16 addr, u8 *val)
 
 	err = i2c_transfer(client->adapter, msg, 2);
 
-	if (err != 1)
+	if (err != 2)
 		return -EINVAL;
 
 	*val = data[2];
@@ -1012,23 +1012,13 @@ static int ov5650_set_mode(struct ov5650_info *info, struct ov5650_mode *mode)
 	ov5650_get_coarse_time_regs(reg_list + 2, mode->coarse_time);
 	ov5650_get_gain_reg(reg_list + 5, mode->gain);
 
-	/* Check what condition reset and mode start sequences are */
-	/* needed. For switching between certain modes, these are  */
-	/* not required. Skipping them saves time for I2C access   */
-	if ((info->mode == OV5650_MODE_INVALID) ||
-		((last_mode != mode_2592x1944) &&
-		(last_mode != mode_1296x972)) ||
-		((mode_table[sensor_mode] != mode_2592x1944) &&
-		(mode_table[sensor_mode] != mode_1296x972))) {
-		err = ov5650_write_table(info, reset_seq, NULL, 0);
-		if (err)
-			return err;
+	err = ov5650_write_table(info, reset_seq, NULL, 0);
+	if (err)
+		return err;
 
-		err = ov5650_write_table(info, mode_start, NULL, 0);
-		if (err)
-			return err;
-	}
-	last_mode = mode_table[sensor_mode];
+	err = ov5650_write_table(info, mode_start, NULL, 0);
+	if (err)
+		return err;
 
 	err = ov5650_write_table(info, mode_table[sensor_mode],
 		reg_list, 6);
@@ -1045,51 +1035,37 @@ static int ov5650_set_mode(struct ov5650_info *info, struct ov5650_mode *mode)
 
 static int ov5650_set_frame_length(struct ov5650_info *info, u32 frame_length)
 {
-	struct ov5650_reg reg_list[2];
-	int i = 0;
 	int ret;
+	struct ov5650_reg reg_list[2];
+	u8 *b_ptr = info->i2c_trans_buf;
 
 	ov5650_get_frame_length_regs(reg_list, frame_length);
 
-	for (i = 0; i < 2; i++)	{
-		ret = ov5650_write_reg_helper(info, reg_list[i].addr,
-			reg_list[i].val);
-		if (ret)
-			return ret;
-	}
+	*b_ptr++ = reg_list[0].addr >> 8;
+	*b_ptr++ = reg_list[0].addr & 0xff;
+	*b_ptr++ = reg_list[0].val & 0xff;
+	*b_ptr++ = reg_list[1].val & 0xff;
+	ret = ov5650_write_bulk_reg_helper(info, 4);
 
-	return 0;
+	return ret;
 }
 
 static int ov5650_set_coarse_time(struct ov5650_info *info, u32 coarse_time)
 {
 	int ret;
-
 	struct ov5650_reg reg_list[3];
-	int i = 0;
+	u8 *b_ptr = info->i2c_trans_buf;
 
 	ov5650_get_coarse_time_regs(reg_list, coarse_time);
 
-	ret = ov5650_write_reg_helper(info, 0x3212, 0x01);
-	if (ret)
-		return ret;
+	*b_ptr++ = reg_list[0].addr >> 8;
+	*b_ptr++ = reg_list[0].addr & 0xff;
+	*b_ptr++ = reg_list[0].val & 0xff;
+	*b_ptr++ = reg_list[1].val & 0xff;
+	*b_ptr++ = reg_list[2].val & 0xff;
+	ret = ov5650_write_bulk_reg_helper(info, 5);
 
-	for (i = 0; i < 3; i++)	{
-		ret = ov5650_write_reg_helper(info, reg_list[i].addr,
-			reg_list[i].val);
-		if (ret)
-			return ret;
-	}
-
-	ret = ov5650_write_reg_helper(info, 0x3212, 0x11);
-	if (ret)
-		return ret;
-
-	ret = ov5650_write_reg_helper(info, 0x3212, 0xa1);
-	if (ret)
-		return ret;
-
-	return 0;
+	return ret;
 }
 
 static int ov5650_set_gain(struct ov5650_info *info, u16 gain)
@@ -1098,11 +1074,52 @@ static int ov5650_set_gain(struct ov5650_info *info, u16 gain)
 	struct ov5650_reg reg_list;
 
 	ov5650_get_gain_reg(&reg_list, gain);
-
 	ret = ov5650_write_reg_helper(info, reg_list.addr, reg_list.val);
 
 	return ret;
 }
+
+static int ov5650_set_group_hold(struct ov5650_info *info, struct ov5650_ae *ae)
+{
+	int ret;
+	int count = 0;
+	bool groupHoldEnabled = false;
+
+	if (ae->gain_enable)
+		count++;
+	if (ae->coarse_time_enable)
+		count++;
+	if (ae->frame_length_enable)
+		count++;
+	if (count >= 2)
+		groupHoldEnabled = true;
+
+	if (groupHoldEnabled) {
+		ret = ov5650_write_reg_helper(info, 0x3212, 0x01);
+		if (ret)
+			return ret;
+	}
+
+	if (ae->gain_enable)
+		ov5650_set_gain(info, ae->gain);
+	if (ae->coarse_time_enable)
+		ov5650_set_coarse_time(info, ae->coarse_time);
+	if (ae->frame_length_enable)
+		ov5650_set_frame_length(info, ae->frame_length);
+
+	if (groupHoldEnabled) {
+		ret = ov5650_write_reg_helper(info, 0x3212, 0x11);
+		if (ret)
+			return ret;
+
+		ret = ov5650_write_reg_helper(info, 0x3212, 0xa1);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 
 static int ov5650_set_binning(struct ov5650_info *info, u8 enable)
 {
@@ -1230,31 +1247,69 @@ static int ov5650_test_pattern(struct ov5650_info *info,
 }
 
 static int set_power_helper(struct ov5650_platform_data *pdata,
-				int powerLevel)
+				int powerLevel, int *ref_cnt)
 {
 	if (pdata) {
 		if (powerLevel && pdata->power_on) {
-			pdata->power_on();
-		} else if (pdata->power_off) {
-			pdata->power_off();
-			stereo_ov5650_info->mode = OV5650_MODE_INVALID;
+			if (*ref_cnt == 0)
+				pdata->power_on();
+			*ref_cnt = *ref_cnt + 1;
+		}
+		else if (pdata->power_off) {
+			*ref_cnt = *ref_cnt - 1;
+			if (*ref_cnt <= 0)
+				pdata->power_off();
 		}
 	}
 	return 0;
 }
 
-static int ov5650_set_power(int powerLevel)
+static int ov5650_set_power(struct ov5650_info *info, int powerLevel)
 {
 	pr_info("%s: powerLevel=%d camera mode=%d\n", __func__, powerLevel,
-			stereo_ov5650_info->camera_mode);
+			info->camera_mode);
 
-	if (StereoCameraMode_Left & stereo_ov5650_info->camera_mode)
-		set_power_helper(stereo_ov5650_info->left.pdata, powerLevel);
+	if (StereoCameraMode_Left & info->camera_mode) {
+		mutex_lock(&info->mutex_le);
+		set_power_helper(info->left.pdata, powerLevel,
+			&info->power_refcnt_le);
+		mutex_unlock(&info->mutex_le);
+	}
 
-	if (StereoCameraMode_Right & stereo_ov5650_info->camera_mode)
-		set_power_helper(stereo_ov5650_info->right.pdata, powerLevel);
+	if (StereoCameraMode_Right & info->camera_mode) {
+		mutex_lock(&info->mutex_ri);
+		set_power_helper(info->right.pdata, powerLevel,
+			&info->power_refcnt_ri);
+		mutex_unlock(&info->mutex_ri);
+	}
 
 	return 0;
+}
+
+static int ov5650_get_sensor_id(struct ov5650_info *info)
+{
+	int ret = 0;
+	int i;
+	u8  bak;
+
+	pr_info("%s\n", __func__);
+	if (info->sensor_data.fuse_id_size)
+		return 0;
+
+	ov5650_set_power(info, 1);
+
+	for (i = 0; i < 5; i++) {
+		ret |= ov5650_write_reg_helper(info, 0x3d00, i);
+		ret |= ov5650_read_reg_helper(info, 0x3d04,
+				&bak);
+		info->sensor_data.fuse_id[i] = bak;
+	}
+
+	if (!ret)
+		info->sensor_data.fuse_id_size = i;
+
+	ov5650_set_power(info, 0);
+	return ret;
 }
 
 static long ov5650_ioctl(struct file *file,
@@ -1267,13 +1322,13 @@ static long ov5650_ioctl(struct file *file,
 	case OV5650_IOCTL_SET_CAMERA_MODE:
 	{
 		if (info->camera_mode != arg) {
-			err = ov5650_set_power(0);
+			err = ov5650_set_power(info, 0);
 			if (err) {
 				pr_info("%s %d\n", __func__, __LINE__);
 				return err;
 			}
 			info->camera_mode = arg;
-			err = ov5650_set_power(1);
+			err = ov5650_set_power(info, 1);
 			if (err)
 				return err;
 		}
@@ -1320,6 +1375,32 @@ static long ov5650_ioctl(struct file *file,
 			pr_err("%s %d %d\n", __func__, __LINE__, err);
 		return err;
 	}
+	case OV5650_IOCTL_SET_GROUP_HOLD:
+	{
+		struct ov5650_ae ae;
+		if (copy_from_user(&ae,
+				(const void __user *)arg,
+				sizeof(struct ov5650_ae))) {
+			pr_info("%s %d\n", __func__, __LINE__);
+			return -EFAULT;
+		}
+		return ov5650_set_group_hold(info, &ae);
+	}
+	case OV5650_IOCTL_GET_SENSORDATA:
+	{
+		err = ov5650_get_sensor_id(info);
+		if (err) {
+			pr_err("%s %d %d\n", __func__, __LINE__, err);
+			return err;
+		}
+		if (copy_to_user((void __user *)arg,
+				&info->sensor_data,
+				sizeof(struct ov5650_sensordata))) {
+			pr_info("%s %d\n", __func__, __LINE__);
+			return -EFAULT;
+		}
+		return 0;
+	}
 	default:
 		return -EINVAL;
 	}
@@ -1330,13 +1411,15 @@ static int ov5650_open(struct inode *inode, struct file *file)
 {
 	pr_info("%s\n", __func__);
 	file->private_data = stereo_ov5650_info;
-	ov5650_set_power(1);
+	ov5650_set_power(stereo_ov5650_info, 1);
 	return 0;
 }
 
 int ov5650_release(struct inode *inode, struct file *file)
 {
-	ov5650_set_power(0);
+	struct ov5650_info *info = file->private_data;
+
+	ov5650_set_power(info, 0);
 	file->private_data = NULL;
 	return 0;
 }
@@ -1402,6 +1485,8 @@ static int left_ov5650_probe(struct i2c_client *client,
 
 	stereo_ov5650_info->left.pdata = client->dev.platform_data;
 	stereo_ov5650_info->left.i2c_client = client;
+	mutex_init(&stereo_ov5650_info->mutex_le);
+	mutex_init(&stereo_ov5650_info->mutex_ri);
 
 	return 0;
 }
@@ -1493,4 +1578,4 @@ static void __exit ov5650_exit(void)
 
 module_init(ov5650_init);
 module_exit(ov5650_exit);
-
+MODULE_LICENSE("GPL v2");

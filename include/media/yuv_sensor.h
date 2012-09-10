@@ -38,6 +38,17 @@
 #define SENSOR_IOCTL_GET_AF_STATUS      _IOW('o', 7, __u8)
 #define SENSOR_IOCTL_SET_CAMERA         _IOW('o', 8, __u8)
 
+typedef struct
+{
+     unsigned int addr;
+     unsigned int val;
+} register_setting;
+
+#define ASUS_CUSTOM_IOCTL_REG_SET 120
+#define ASUS_CUSTOM_IOCTL_REG_GET 121
+#define SENSOR_CUSTOM_IOCTL_REG_SET _IOW('o', ASUS_CUSTOM_IOCTL_REG_SET, register_setting)
+#define SENSOR_CUSTOM_IOCTL_REG_GET _IOWR('o', ASUS_CUSTOM_IOCTL_REG_GET, register_setting)
+
 enum {
     ASUS_CUSTOM_IOCTL_NUMBASE = 40,
     ASUS_CUSTOM_IOCTL_AF_SET,

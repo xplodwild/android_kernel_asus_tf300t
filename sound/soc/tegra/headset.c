@@ -39,6 +39,7 @@
 #include "../gpio-names.h"
 #include <mach/board-cardhu-misc.h>
 #include "../codecs/wm8903.h"
+#include "../codecs/rt5640.h"
 
 MODULE_DESCRIPTION("Headset detection driver");
 MODULE_LICENSE("GPL");
@@ -67,6 +68,8 @@ int 			hs_micbias_power(int on);
 #define OFF	0
 #define MICDET_ENA		(1 << 1)
 #define MICBIAS_ENA		(1 << 0)
+#define FORCE_HEADPHONE (1)
+#define NO_FORCE_HEADPHONE (0)
 
 enum{
 	NO_DEVICE = 0,
@@ -91,14 +94,16 @@ EXPORT_SYMBOL(lineout_alive);
 static struct workqueue_struct *g_detection_work_queue;
 static DECLARE_WORK(g_detection_work, detection_work);
 
-extern struct snd_soc_codec *global_audio_codec;
+extern struct snd_soc_codec *rt5631_audio_codec;
 extern struct snd_soc_codec *wm8903_codec;
+extern struct snd_soc_codec *rt5640_audio_codec;
 struct work_struct headset_work;
 struct work_struct lineout_work;
 struct snd_soc_codec *global_codec;
 bool need_spk;
 extern int PRJ_ID;
-
+extern unsigned int factory_mode;
+extern int force_headphone;
 
 static ssize_t headset_name_show(struct switch_dev *sdev, char *buf)
 {
@@ -131,7 +136,7 @@ static ssize_t headset_state_show(struct switch_dev *sdev, char *buf)
 
 static void insert_headset(void)
 {
-	if(gpio_get_value(HOOK_GPIO)){
+	if(gpio_get_value(HOOK_GPIO) || (factory_mode && (force_headphone == FORCE_HEADPHONE))){
 		printk("%s: headphone\n", __func__);
 		switch_set_state(&hs_data->sdev, HEADSET_WITHOUT_MIC);
 		hs_micbias_power(OFF);
@@ -340,14 +345,14 @@ static int codec_micbias_power(int on)
 		 if(project_info == TEGRA3_PROJECT_TF201 || project_info == TEGRA3_PROJECT_TF300TG ||
 			project_info == TEGRA3_PROJECT_TF700T || project_info == TEGRA3_PROJECT_TF300TL)
 		{
-			if(global_audio_codec == NULL){
-				printk("%s: No rt5631 global_audio_codec - set micbias on fail\n", __func__);
+			if(rt5631_audio_codec == NULL){
+				printk("%s: No rt5631 rt5631_audio_codec - set micbias on fail\n", __func__);
 				return 0;
 			}
 			/* Mic Bias enable */
-			CtrlReg = snd_soc_read(global_audio_codec, 0x3B);
+			CtrlReg = snd_soc_read(rt5631_audio_codec, 0x3B);
 			CtrlReg = CtrlReg | (1 << 3);
-			snd_soc_write(global_audio_codec, 0x3B, CtrlReg);
+			snd_soc_write(rt5631_audio_codec, 0x3B, CtrlReg);
 		}else if(project_info == TEGRA3_PROJECT_TF300T){
 			if(wm8903_codec == NULL){
 				printk("%s: No wm8903_codec - set micbias on fail\n", __func__);
@@ -355,19 +360,26 @@ static int codec_micbias_power(int on)
 			}
 			CtrlReg = MICBIAS_ENA | MICDET_ENA;
 			snd_soc_write(wm8903_codec, WM8903_MIC_BIAS_CONTROL_0, CtrlReg);
+		}else if(project_info == TEGRA3_PROJECT_TF500T || project_info == TEGRA3_PROJECT_P1801){
+			if(rt5640_audio_codec == NULL){
+				printk("%s: No RT5642_codec - set micbias on fail\n", __func__);
+				return 0;
+			}
+			snd_soc_update_bits(rt5640_audio_codec, RT5640_PWR_ANLG1, RT5640_PWR_LDO2, RT5640_PWR_LDO2); /* Enable LDO2 */
+			snd_soc_update_bits(rt5640_audio_codec, RT5640_PWR_ANLG2, RT5640_PWR_MB1, RT5640_PWR_MB1); /*Enable MicBias1 */
 		}
 	}else{
 		 if(project_info == TEGRA3_PROJECT_TF201 || project_info == TEGRA3_PROJECT_TF300TG ||
                         project_info == TEGRA3_PROJECT_TF700T || project_info == TEGRA3_PROJECT_TF300TL)
 		{
-			if(global_audio_codec == NULL){
-				printk("%s: No rt5631 global_audio_codec - set micbias off fail\n", __func__);
+			if(rt5631_audio_codec == NULL){
+				printk("%s: No rt5631 rt5631_audio_codec - set micbias off fail\n", __func__);
 				return 0;
 			}
 			/* Mic Bias diable*/
-			CtrlReg = snd_soc_read(global_audio_codec, 0x3B);
+			CtrlReg = snd_soc_read(rt5631_audio_codec, 0x3B);
 			CtrlReg = CtrlReg & (0xFFFFFFF7);
-			snd_soc_write(global_audio_codec, 0x3B, CtrlReg);
+			snd_soc_write(rt5631_audio_codec, 0x3B, CtrlReg);
 		}else if(project_info == TEGRA3_PROJECT_TF300T){
 			if(wm8903_codec == NULL){
 				printk("%s: No wm8903_codec - set micbias off fail\n", __func__);
@@ -375,6 +387,13 @@ static int codec_micbias_power(int on)
 			}
 			CtrlReg = 0;
 			snd_soc_write(wm8903_codec, WM8903_MIC_BIAS_CONTROL_0, CtrlReg);
+		}else if(project_info == TEGRA3_PROJECT_TF500T || project_info == TEGRA3_PROJECT_P1801){
+			if(rt5640_audio_codec == NULL){
+				printk("%s: No RT5642_codec - set micbias on fail\n", __func__);
+				return 0;
+			}
+			snd_soc_update_bits(rt5640_audio_codec, RT5640_PWR_ANLG2, RT5640_PWR_MB1, 0); /* Disable MicBias1 */
+			snd_soc_update_bits(rt5640_audio_codec, RT5640_PWR_ANLG1, RT5640_PWR_LDO2, 0); /* Disable LDO2 */
 		}
 	}
 	return 0;

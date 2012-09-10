@@ -193,8 +193,12 @@ static int wm8753_set_dai(struct snd_kcontrol *kcontrol,
 	struct wm8753_priv *wm8753 = snd_soc_codec_get_drvdata(codec);
 	u16 ioctl;
 
+	if (wm8753->dai_func == ucontrol->value.integer.value[0])
+		return 0;
+
 	if (codec->active)
-		return -EBUSY;
+		printk(KERN_WARNING
+			"Trying to Change the Dai Mode when codec is active\n");
 
 	ioctl = snd_soc_read(codec, WM8753_IOCTL);
 
@@ -908,6 +912,10 @@ static int wm8753_pcm_hw_params(struct snd_pcm_substream *substream,
 	/* sample rate */
 	if (params_rate(params) * 384 == wm8753->pcmclk)
 		srate |= 0x80;
+
+	/* ADC and V-DAC at same sample rate */
+	srate |= 1<<8;
+
 	snd_soc_write(codec, WM8753_SRATE1, srate);
 
 	snd_soc_write(codec, WM8753_PCM, voice);
@@ -1127,6 +1135,10 @@ static int wm8753_i2s_hw_params(struct snd_pcm_substream *substream,
 		printk(KERN_ERR "wm8753 invalid MCLK or rate\n");
 		return coeff;
 	}
+
+	/* ADC and HiFi-DAC at same sample rate */
+	srate &= ~(1<<8);
+
 	snd_soc_write(codec, WM8753_SRATE1, srate | (coeff_div[coeff].sr << 1) |
 		coeff_div[coeff].usb);
 
@@ -1542,8 +1554,8 @@ static int wm8753_probe(struct snd_soc_codec *codec)
 	/* set the update bits */
 	snd_soc_update_bits(codec, WM8753_LDAC, 0x0100, 0x0100);
 	snd_soc_update_bits(codec, WM8753_RDAC, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8753_LDAC, 0x0100, 0x0100);
-	snd_soc_update_bits(codec, WM8753_RDAC, 0x0100, 0x0100);
+	snd_soc_update_bits(codec, WM8753_LADC, 0x0100, 0x0100);
+	snd_soc_update_bits(codec, WM8753_RADC, 0x0100, 0x0100);
 	snd_soc_update_bits(codec, WM8753_LOUT1V, 0x0100, 0x0100);
 	snd_soc_update_bits(codec, WM8753_ROUT1V, 0x0100, 0x0100);
 	snd_soc_update_bits(codec, WM8753_LOUT2V, 0x0100, 0x0100);

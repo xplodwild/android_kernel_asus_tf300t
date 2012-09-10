@@ -78,6 +78,10 @@
 /* global definition */
 #define RT_L_MUTE				(0x1 << 15)
 #define RT_R_MUTE				(0x1 << 7)
+#define RT5631_L_VOL_MASK				(0x3f << 8)
+#define RT5631_L_VOL_SFT				8
+#define RT5631_R_VOL_MASK				(0x3f)
+#define RT5631_R_VOL_SFT				0
 
 /* Speaker Output Control(0x02) */
 #define SPK_L_VOL_SEL_MASK			(0x1 << 14)

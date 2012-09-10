@@ -63,7 +63,8 @@ static int __init vibrator_init(void)
 	 */
 	u32 project_info = tegra3_get_project_id();
         if(project_info != TEGRA3_PROJECT_TF201 &&
-	    project_info != TEGRA3_PROJECT_TF700T)
+	    project_info != TEGRA3_PROJECT_TF700T &&
+	    project_info != TEGRA3_PROJECT_TF500T)
 		return 0;
 
 	printk(KERN_INFO "%s+ #####\n", __func__);
